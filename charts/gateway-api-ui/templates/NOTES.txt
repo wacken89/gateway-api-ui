@@ -1,0 +1,30 @@
+gateway-api-ui has been deployed.
+
+A read-only Gateway API dashboard, running as ServiceAccount
+{{ include "gateway-api-ui.serviceAccountName" . }} with a cluster-wide read-only role.
+
+Open it:
+
+{{- if .Values.ingress.enabled }}
+{{- range $host := .Values.ingress.hosts }}
+  {{- range .paths }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ $host.host }}{{ .path }}
+  {{- end }}
+{{- end }}
+{{- else if .Values.httpRoute.enabled }}
+{{- range .Values.httpRoute.hostnames }}
+  http://{{ . }}/
+{{- end }}
+{{- else }}
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "gateway-api-ui.fullname" . }} 8000:{{ .Values.service.port }}
+  # then open http://localhost:8000
+{{- end }}
+
+{{- if not .Values.rbac.create }}
+
+WARNING: rbac.create=false — the dashboard will get 403s unless a read-only
+ClusterRole is bound to ServiceAccount {{ include "gateway-api-ui.serviceAccountName" . }} by other means.
+{{- end }}
+
+Note: this dashboard is read-only but lists all Gateway API objects cluster-wide.
+Put SSO (oauth2-proxy / Keycloak) in front before exposing it outside the cluster.

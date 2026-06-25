@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" role="img" aria-label="Cilium">
+  <defs>
+    <linearGradient id="c" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#36c98f"/>
+      <stop offset="1" stop-color="#11a079"/>
+    </linearGradient>
+  </defs>
+  <rect width="48" height="48" rx="11" fill="url(#c)"/>
+  <path d="M24 10.5 33.5 16v11L24 32.5 14.5 27V16Z" fill="none" stroke="#fff" stroke-width="2.2" stroke-linejoin="round"/>
+  <path d="M24 17.5 28.7 20.25v5.5L24 28.5 19.3 25.75v-5.5Z" fill="#fff"/>
+</svg>

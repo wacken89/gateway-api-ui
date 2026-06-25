@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Python syntax check
+        run: python -m py_compile code/*.py
+
+      - name: JS syntax check
+        run: node --check code/static/app.js
+
+      - uses: azure/setup-helm@v4
+
+      - name: Helm lint & template
+        run: |
+          helm lint charts/gateway-api-ui
+          helm template t charts/gateway-api-ui > /dev/null
+          helm template t charts/gateway-api-ui \
+            --set ingress.enabled=true \
+            --set httpRoute.enabled=true \
+            --set 'httpRoute.parentRefs[0].name=gw' \
+            --set autoscaling.enabled=true \
+            --set metrics.serviceMonitor.enabled=true > /dev/null

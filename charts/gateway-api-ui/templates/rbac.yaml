@@ -1,0 +1,55 @@
+{{- if .Values.rbac.create -}}
+# Strictly read-only: get/list/watch on Gateway API objects plus the core
+# resources needed to resolve backends and list namespaces. No write verbs.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "gateway-api-ui.fullname" . }}-readonly
+  labels:
+    {{- include "gateway-api-ui.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources:
+      - gatewayclasses
+      - gateways
+      - httproutes
+      - grpcroutes
+      - tlsroutes
+      - tcproutes
+      - udproutes
+      - referencegrants
+    verbs: ["get", "list", "watch"]
+  # Optional Envoy Gateway policy CRDs — harmless if the group is absent.
+  - apiGroups: ["gateway.envoyproxy.io"]
+    resources: ["securitypolicies", "clienttrafficpolicies", "backendtrafficpolicies"]
+    verbs: ["get", "list", "watch"]
+  # Optional Envoy AI Gateway CRDs — harmless if the group is absent.
+  - apiGroups: ["aigateway.envoyproxy.io"]
+    resources: ["aigatewayroutes", "aiservicebackends", "backendsecuritypolicies"]
+    verbs: ["get", "list", "watch"]
+  # Core lookups for backend resolution / namespace selector.
+  - apiGroups: [""]
+    resources: ["namespaces", "services"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "watch"]
+  {{- with .Values.rbac.extraRules }}
+  {{- toYaml . | nindent 2 }}
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "gateway-api-ui.fullname" . }}-readonly
+  labels:
+    {{- include "gateway-api-ui.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "gateway-api-ui.fullname" . }}-readonly
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "gateway-api-ui.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Gateway API UI</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><rect width='24' height='24' rx='6' fill='%236366f1'/><g stroke='white' stroke-width='1.7' stroke-linecap='round' fill='none'><path d='M6.4 12C11 9.4 12.4 6.9 16.6 6.4'/><path d='M6.8 12H16'/><path d='M6.4 12C11 14.6 12.4 17.1 16.6 17.6'/></g><g fill='white'><circle cx='4.8' cy='12' r='2.4'/><circle cx='18.2' cy='6.4' r='1.7'/><circle cx='18.2' cy='12' r='1.7'/><circle cx='18.2' cy='17.6' r='1.7'/></g></svg>" />
+  <link rel="stylesheet" href="/app.css" />
+  <script>
+    // Apply saved theme before first paint (default: dark to match SRE tooling).
+    if (localStorage.getItem('theme') !== 'light') document.documentElement.classList.add('dark');
+  </script>
+  <!-- locally vendored, no external CDN required -->
+  <script src="/vendor/lucide.min.js"></script>
+  <script src="/app.js"></script>
+  <script defer src="/vendor/alpine.min.js"></script>
+</head>
+<body x-data="gatewayUI()" x-init="init()" x-cloak @keydown.escape="onEscape()">
+<a href="#content" class="skip-link">Skip to content</a>
+<div class="app">
+
+  <!-- ===================== Sidebar ===================== -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M6.4 12C11 9.4 12.4 6.9 16.6 6.4"/>
+          <path d="M6.8 12H16" opacity=".9"/>
+          <path d="M6.4 12C11 14.6 12.4 17.1 16.6 17.6"/>
+          <circle cx="4.8" cy="12" r="2.4" fill="#fff" stroke="none"/>
+          <circle cx="18.2" cy="6.4" r="1.7" fill="#fff" stroke="none"/>
+          <circle cx="18.2" cy="12" r="1.7" fill="#fff" stroke="none" opacity=".9"/>
+          <circle cx="18.2" cy="17.6" r="1.7" fill="#fff" stroke="none"/>
+        </svg>
+      </div>
+      <div>
+        <h1>Gateway API</h1>
+        <p>Gateway API dashboard</p>
+      </div>
+    </div>
+
+    <!-- Cluster / context card -->
+    <div class="cluster-card">
+      <div class="cluster-top">
+        <span class="cluster-icon"><i :data-lucide="ctx.inCluster ? 'server' : 'laptop'"></i></span>
+        <div style="min-width:0;flex:1">
+          <div class="cluster-name" x-text="ctx.context || (ctx.connected ? 'cluster' : 'disconnected')"></div>
+          <div class="cluster-sub" x-text="ctx.inCluster ? 'in-cluster · ServiceAccount' : 'local · kubeconfig'"></div>
+        </div>
+        <span class="ctx-dot" :class="!ctx.connected && 'off'" :title="ctx.connected ? 'connected' : 'disconnected'"></span>
+      </div>
+      <div class="cluster-meta">
+        <span class="mchip" x-show="ctx.serverVersion"><i data-lucide="boxes"></i> k8s <span x-text="ctx.serverVersion"></span></span>
+        <span class="mchip"><i data-lucide="eye"></i> read-only</span>
+        <span class="mchip" x-show="namespace!=='all'"><i data-lucide="layers"></i> <span x-text="namespace"></span></span>
+      </div>
+      <div x-show="ctx.error" class="ctx-err" x-text="ctx.error"></div>
+    </div>
+
+    <div class="sidebar-scroll">
+    <nav class="nav" aria-label="Primary">
+      <div class="nav-label">Dashboard</div>
+      <button class="nav-item" :class="view==='overview' && 'active'" :aria-current="view==='overview' ? 'page' : false" @click="go('overview')">
+        <i data-lucide="layout-dashboard"></i> Overview
+      </button>
+      <button class="nav-item" :class="view==='topology' && 'active'" :aria-current="view==='topology' ? 'page' : false" @click="go('topology')">
+        <i data-lucide="git-fork"></i> Topology
+      </button>
+
+      <div class="nav-label">Resources</div>
+      <button class="nav-item" :class="view==='gatewayclasses' && 'active'" :aria-current="view==='gatewayclasses' ? 'page' : false" @click="go('gatewayclasses')">
+        <i data-lucide="box"></i> Gateway Classes <span class="count" x-text="counts.gatewayClasses"></span>
+      </button>
+      <button class="nav-item" :class="view==='gateways' && 'active'" :aria-current="view==='gateways' ? 'page' : false" @click="go('gateways')">
+        <i data-lucide="door-open"></i> Gateways
+        <span class="nav-dot" :class="navHealth('gateways')" x-show="navHealth('gateways')" :title="navProblems('gateways')+' need attention'"></span>
+        <span class="count" x-text="counts.gateways"></span>
+      </button>
+      <button class="nav-item" :class="view==='routes' && 'active'" :aria-current="view==='routes' ? 'page' : false" @click="go('routes')">
+        <i data-lucide="route"></i> Routes
+        <span class="nav-dot" :class="navHealth('routes')" x-show="navHealth('routes')" :title="navProblems('routes')+' need attention'"></span>
+        <span class="count" x-text="counts.routes"></span>
+      </button>
+      <button class="nav-item" :class="view==='policies' && 'active'" :aria-current="view==='policies' ? 'page' : false" @click="go('policies')" x-show="policiesAvailable">
+        <i data-lucide="shield-check"></i> Policies <span class="count" x-text="counts.policies || 0"></span>
+      </button>
+      <button class="nav-item" :class="view==='ai' && 'active'" :aria-current="view==='ai' ? 'page' : false" @click="go('ai')" x-show="aiAvailable">
+        <i data-lucide="sparkles"></i> AI Gateway <span class="count" x-text="aiRoutes.length"></span>
+      </button>
+    </nav>
+
+    <!-- Providers (controllers) detected in the cluster -->
+    <div x-show="providers.length">
+      <div class="nav-label">Providers</div>
+      <div class="providers">
+        <template x-for="p in providers" :key="p.key">
+          <div class="provider" style="cursor:pointer" role="button" tabindex="0"
+               :style="'--c:'+p.color+';--pc:'+p.color" :title="(p.controllers||[]).join('\n')" :aria-label="p.name+' provider'"
+               @click="go('gatewayclasses')" @keydown.enter="go('gatewayclasses')" @keydown.space.prevent="go('gatewayclasses')">
+            <span class="prov-logo">
+              <img :src="'/vendor/logos/'+p.key+'.svg'" alt="" @error="$el.remove()" />
+              <span x-text="(p.name||'?').charAt(0)"></span>
+            </span>
+            <div style="min-width:0">
+              <div class="prov-name" x-text="p.name"></div>
+              <div class="prov-sub"><span x-text="p.gateways"></span> gateway<span x-show="p.gateways!==1">s</span> · <span x-text="p.classes"></span> class<span x-show="p.classes!==1">es</span></div>
+            </div>
+            <i data-lucide="chevron-right" style="width:15px;height:15px;color:var(--text-faint);margin-left:auto;flex-shrink:0"></i>
+          </div>
+        </template>
+      </div>
+    </div>
+    </div>
+
+    <div class="sidebar-foot">
+      <div class="user-row" x-show="me.authEnabled">
+        <span class="user-avatar" x-text="userInitials()"></span>
+        <div style="min-width:0;flex:1">
+          <div class="user-name" x-text="me.name || me.username || 'Unknown'"></div>
+          <div class="user-sub" x-text="me.username && me.email ? me.email : (me.email || '')"></div>
+        </div>
+        <button class="icon-btn" @click="logout()" title="Log out" aria-label="Log out"><i data-lucide="log-out"></i></button>
+      </div>
+      <div class="health-bar">
+        <button class="health-seg ok" title="Healthy — open overview" @click="go('overview')"><span class="hdot"></span> <span class="hn" x-text="healthTotals().ok"></span></button>
+        <button class="health-seg warn" :class="healthTotals().warn>0 && 'has'" title="Warnings — open overview" @click="go('overview')"><span class="hdot"></span> <span class="hn" x-text="healthTotals().warn"></span></button>
+        <button class="health-seg error" :class="healthTotals().error>0 && 'has'" title="Errors — view problems" @click="go('overview')"><span class="hdot"></span> <span class="hn" x-text="healthTotals().error"></span></button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ===================== Main ===================== -->
+  <main class="main">
+    <header class="topbar">
+      <h2 x-text="title()"></h2>
+      <div class="progress" x-show="loading" role="progressbar" aria-label="Loading"></div>
+      <div class="spacer"></div>
+
+      <button class="kbd-btn" @click="openPalette()" aria-label="Search all resources" title="Search all resources">
+        <i data-lucide="search"></i> <span class="hide-sm">Search</span> <kbd>⌘K</kbd>
+      </button>
+
+      <div class="field hide-sm" x-show="view!=='gatewayclasses' && view!=='topology'">
+        <i data-lucide="filter"></i>
+        <input class="input" placeholder="Filter this view…" x-model="search" aria-label="Filter current view" />
+      </div>
+
+      <div class="ns-picker" @keydown.escape="nsPicker.open=false" @click.outside="nsPicker.open=false">
+        <button class="ns-trigger" @click="toggleNsPicker()" :aria-expanded="nsPicker.open" aria-haspopup="listbox" aria-label="Filter by namespace">
+          <i data-lucide="layers"></i>
+          <span class="ns-cur" x-text="namespace==='all' ? 'All namespaces' : namespace"></span>
+          <i data-lucide="chevron-down" class="chev"></i>
+        </button>
+        <div class="ns-pop" x-show="nsPicker.open" role="listbox"
+             x-transition:enter="fade-enter" x-transition:enter-start="fade-from" x-transition:enter-end="fade-to">
+          <div class="ns-search">
+            <i data-lucide="search"></i>
+            <input x-ref="nsInput" x-model="nsPicker.q" @input="nsPicker.sel=0" placeholder="Filter namespaces…"
+                   aria-label="Filter namespaces"
+                   @keydown.arrow-down.prevent="nsMove(1)" @keydown.arrow-up.prevent="nsMove(-1)" @keydown.enter.prevent="nsEnter()" />
+          </div>
+          <div class="ns-list">
+            <button class="ns-opt" :class="[namespace==='all' && 'sel', nsPicker.sel===0 && 'active']" @click="nsSelect('all')" @mouseenter="nsPicker.sel=0">
+              <i data-lucide="globe" style="width:14px;height:14px;color:var(--text-faint)"></i> All namespaces
+              <i data-lucide="check" class="check" x-show="namespace==='all'"></i>
+            </button>
+            <template x-for="(ns,i) in nsResults()" :key="ns">
+              <button class="ns-opt" :class="[namespace===ns && 'sel', nsPicker.sel===i+1 && 'active']" @click="nsSelect(ns)" @mouseenter="nsPicker.sel=i+1">
+                <span class="ns-mono" x-text="ns"></span>
+                <i data-lucide="check" class="check" x-show="namespace===ns"></i>
+              </button>
+            </template>
+            <template x-if="!nsResults().length"><div class="ns-empty" x-text="namespaces.length ? 'No namespace matches' : 'No namespaces with Gateway API resources'"></div></template>
+          </div>
+          <div class="ns-foot"><span x-text="namespaces.length + ' namespace(s) with resources'"></span></div>
+        </div>
+      </div>
+
+      <div class="field hide-sm" x-show="view==='routes'">
+        <select class="select" x-model="routeType" @change="renderIcons()">
+          <option value="all">All routes</option>
+          <option value="http">HTTP</option>
+          <option value="grpc">GRPC</option>
+          <option value="tls">TLS</option>
+          <option value="tcp">TCP</option>
+        </select>
+      </div>
+
+      <button class="icon-btn" :class="auto && 'on'" @click="toggleAuto()" :title="auto ? 'Auto-refresh on ('+interval+'s)' : 'Auto-refresh off'">
+        <i data-lucide="timer"></i>
+      </button>
+      <button class="icon-btn" :class="loading && 'spinning'" @click="reload(true)" title="Refresh">
+        <i data-lucide="refresh-cw"></i>
+      </button>
+      <button class="icon-btn" @click="toggleTheme()" title="Toggle theme">
+        <i :data-lucide="dark ? 'sun' : 'moon'"></i>
+      </button>
+    </header>
+
+    <section class="content" id="content" tabindex="-1">
+
+      <!-- loading skeletons -->
+      <template x-if="loading && !loaded">
+        <div class="grid cards">
+          <template x-for="i in 6" :key="i"><div class="skeleton"></div></template>
+        </div>
+      </template>
+
+      <!-- ============ OVERVIEW ============ -->
+      <div x-show="view==='overview' && loaded">
+        <div class="grid stats">
+          <div class="stat"><div class="k"><i data-lucide="door-open"></i> Gateways</div><div class="v" x-text="overview.counts?.gateways ?? 0"></div><div class="sub"><span x-text="overview.counts?.listeners ?? 0"></span> listeners</div></div>
+          <div class="stat"><div class="k"><i data-lucide="route"></i> Routes</div><div class="v" x-text="overview.counts?.routes ?? 0"></div><div class="sub"><span x-text="overview.counts?.attachedRoutes ?? 0"></span> attached</div></div>
+          <div class="stat"><div class="k"><i data-lucide="box"></i> Classes</div><div class="v" x-text="overview.counts?.gatewayClasses ?? 0"></div><div class="sub">controllers</div></div>
+          <div class="stat"><div class="k"><i data-lucide="activity"></i> Healthy</div><div class="v" x-text="healthyPct()+'%'"></div><div class="sub">gateways + routes ok</div></div>
+        </div>
+
+        <div class="panel" x-show="(overview.problems||[]).length">
+          <div class="panel-head"><i data-lucide="alert-triangle" style="color:var(--warn)"></i> Problems
+            <span class="pill warn" style="margin-left:auto" x-text="(overview.problems||[]).length"></span>
+          </div>
+          <template x-for="p in overview.problems" :key="p.kind+p.namespace+p.name">
+            <div class="problem">
+              <span class="pill" :class="p.health"><i :data-lucide="p.health==='error'?'x-circle':'alert-circle'"></i></span>
+              <div style="flex:1;min-width:0">
+                <div><span class="tag" x-text="p.kind"></span> <strong x-text="p.name"></strong> <span style="color:var(--text-faint)" x-text="p.namespace"></span></div>
+                <div class="reasons" x-text="(p.reasons||[]).join('  ·  ') || 'condition not met'"></div>
+              </div>
+              <button class="icon-btn" @click="openObj(p)"><i data-lucide="arrow-right"></i></button>
+            </div>
+          </template>
+        </div>
+
+        <div class="panel" x-show="!(overview.problems||[]).length">
+          <div class="problem"><span class="pill ok"><i data-lucide="check-circle"></i> All resources healthy</span></div>
+        </div>
+
+        <div class="section-title">Routes by type</div>
+        <div class="grid stats">
+          <template x-for="(n,t) in (overview.routesByType||{})" :key="t">
+            <div class="stat"><div class="k"><span class="proto" :class="t.toUpperCase()" x-text="t.toUpperCase()"></span></div><div class="v" x-text="n"></div></div>
+          </template>
+          <template x-if="!Object.keys(overview.routesByType||{}).length"><div class="empty" style="padding:24px">No routes in scope</div></template>
+        </div>
+      </div>
+
+      <!-- ============ GATEWAY CLASSES ============ -->
+      <div x-show="view==='gatewayclasses' && loaded">
+        <div class="grid cards">
+          <template x-for="gc in gatewayClasses" :key="gc.name">
+            <div class="card" style="cursor:pointer" role="button" tabindex="0"
+                 :aria-label="'GatewayClass '+gc.name"
+                 @click="openObj({kind:'GatewayClass',name:gc.name})"
+                 @keydown.enter="openObj({kind:'GatewayClass',name:gc.name})" @keydown.space.prevent="openObj({kind:'GatewayClass',name:gc.name})">
+              <div class="card-head">
+                <i data-lucide="box" style="color:var(--brand)"></i>
+                <div class="card-title"><span class="name" x-text="gc.name"></span></div>
+                <span class="pill" :class="gc.health" style="margin-left:auto" x-text="gc.health"></span>
+              </div>
+              <div class="card-body">
+                <div class="kv"><span class="k">controller</span><span class="val" x-text="gc.controller"></span></div>
+                <div class="kv" x-show="gc.description"><span class="k">desc</span><span class="val" x-text="gc.description"></span></div>
+              </div>
+            </div>
+          </template>
+        </div>
+        <template x-if="!gatewayClasses.length"><div class="empty"><i data-lucide="box"></i><h3>No GatewayClasses</h3><p>No Gateway API controller registered.</p></div></template>
+      </div>
+
+      <!-- ============ GATEWAYS ============ -->
+      <div x-show="view==='gateways' && loaded">
+        <div class="grid cards">
+          <template x-for="g in filtered(gateways)" :key="g.namespace+g.name">
+            <div class="card" style="cursor:pointer" role="button" tabindex="0"
+                 :aria-label="'Gateway '+g.namespace+'/'+g.name"
+                 @click="openObj({kind:'Gateway',name:g.name,namespace:g.namespace})"
+                 @keydown.enter="openObj({kind:'Gateway',name:g.name,namespace:g.namespace})" @keydown.space.prevent="openObj({kind:'Gateway',name:g.name,namespace:g.namespace})">
+              <div class="card-head">
+                <i data-lucide="door-open" style="color:var(--brand)"></i>
+                <div class="card-title"><span class="name" x-text="g.name"></span></div>
+                <span class="pill" :class="g.health" style="margin-left:auto"><i :data-lucide="healthIcon(g.health)"></i><span x-text="g.health"></span></span>
+              </div>
+              <div class="card-body">
+                <div style="margin-bottom:8px"><span class="ns-chip"><i data-lucide="layers"></i><span x-text="g.namespace"></span></span></div>
+                <div class="kv"><span class="k">class</span><span class="val" x-text="g.gatewayClassName"></span></div>
+                <div class="addr-row" x-show="g.addresses?.length">
+                  <i data-lucide="network" class="ic"></i>
+                  <span class="lbl">IP</span>
+                  <template x-for="a in addrShown(g)" :key="a">
+                    <button class="addr-chip" @click.stop="copy(a, 'IP address copied')" :title="'Copy '+a"><span x-text="a"></span><i data-lucide="copy"></i></button>
+                  </template>
+                  <button class="addr-chip more" x-show="(g.addresses||[]).length > addrLimit" @click.stop="toggleAddr(g.namespace+'/'+g.name)"
+                          x-text="isAddrExpanded(g.namespace+'/'+g.name) ? 'show less' : ('+'+((g.addresses||[]).length-addrLimit)+' more')"></button>
+                </div>
+                <div class="section-title" style="margin:12px 0 4px">Listeners</div>
+                <template x-for="l in g.listeners" :key="l.name">
+                  <div class="listener">
+                    <span class="proto" :class="l.protocol" x-text="l.protocol"></span>
+                    <span class="host" x-text="(l.hostname||'*')+':'+l.port"></span>
+                    <span class="meta">
+                      <span class="tag" x-show="l.tlsMode" x-text="'TLS '+l.tlsMode"></span>
+                      <span class="pill brand" x-text="l.attachedRoutes+' rt'"></span>
+                      <i :data-lucide="healthIcon(l.health)" :style="'width:14px;height:14px;color:var(--'+healthVar(l.health)+')'"></i>
+                    </span>
+                  </div>
+                </template>
+              </div>
+              <div class="card-foot">
+                <span><i data-lucide="route" style="width:13px;height:13px;vertical-align:-2px"></i> <span x-text="g.attachedRoutes"></span> routes</span>
+                <button class="pill muted" style="margin-left:auto;cursor:pointer;border:0" @click.stop="openObj({kind:'Gateway',name:g.name,namespace:g.namespace})"><i data-lucide="file-code"></i> YAML</button>
+              </div>
+            </div>
+          </template>
+        </div>
+        <template x-if="!filtered(gateways).length"><div class="empty"><i data-lucide="door-open"></i><h3>No Gateways</h3><p>Nothing matches the current scope.</p></div></template>
+      </div>
+
+      <!-- ============ ROUTES ============ -->
+      <div x-show="view==='routes' && loaded">
+        <div class="grid cards">
+          <template x-for="r in filteredRoutes()" :key="r.routeType+r.namespace+r.name">
+            <div class="card" style="cursor:pointer" role="button" tabindex="0"
+                 :aria-label="r.kind+' '+r.namespace+'/'+r.name"
+                 @click="openObj({kind:r.kind,name:r.name,namespace:r.namespace})"
+                 @keydown.enter="openObj({kind:r.kind,name:r.name,namespace:r.namespace})" @keydown.space.prevent="openObj({kind:r.kind,name:r.name,namespace:r.namespace})">
+              <div class="card-head">
+                <span class="proto" :class="r.routeType.toUpperCase()" x-text="r.kind.replace('Route','')"></span>
+                <div class="card-title"><span class="name" x-text="r.name"></span></div>
+                <span class="pill" :class="r.health" style="margin-left:auto"><i :data-lucide="healthIcon(r.health)"></i><span x-text="r.health"></span></span>
+              </div>
+              <div class="card-body">
+                <div style="margin-bottom:8px"><span class="ns-chip"><i data-lucide="layers"></i><span x-text="r.namespace"></span></span></div>
+                <div class="chip-row" x-show="r.hostnames?.length" :title="(r.hostnames||[]).join(', ')">
+                  <i data-lucide="globe" class="ic"></i>
+                  <template x-for="h in r.hostnames" :key="h"><span class="chip host"><span x-text="h"></span></span></template>
+                </div>
+                <div class="chip-row">
+                  <i data-lucide="door-open" class="ic"></i>
+                  <template x-for="p in r.parentRefs" :key="p.namespace+p.name+(p.sectionName||'')">
+                    <span class="chip parent"><span x-text="p.name"></span><span class="chip-sub" x-show="p.sectionName" x-text="p.sectionName"></span></span>
+                  </template>
+                  <span x-show="!(r.parentRefs||[]).length" class="val">—</span>
+                </div>
+                <template x-for="(rule,ri) in r.rules" :key="ri">
+                  <div class="rule">
+                    <template x-for="(m,mi) in (rule.matches||[{path:'',method:null,headers:[]}])" :key="mi">
+                      <div class="match">
+                        <span class="tag" x-show="m.method" x-text="m.method"></span>
+                        <span x-text="m.path || 'any'"></span>
+                        <template x-for="h in (m.headers||[])" :key="h"><span class="tag" x-text="h"></span></template>
+                      </div>
+                    </template>
+                    <div class="match" style="margin-top:6px">
+                      <span class="arrow">↳</span>
+                      <template x-for="b in rule.backendRefs" :key="b.name+b.port">
+                        <span class="backend tag"><i data-lucide="server" style="width:11px;height:11px"></i><span x-text="b.name+':'+b.port"></span><span x-show="rule.backendRefs.length>1" style="color:var(--brand)" x-text="' w'+b.weight"></span></span>
+                      </template>
+                      <template x-for="f in (rule.filters||[])" :key="f"><span class="pill brand" x-text="f"></span></template>
+                    </div>
+                  </div>
+                </template>
+              </div>
+              <div class="card-foot">
+                <span x-text="r.rules.length+' rule(s) · '+r.backendCount+' backend(s)'"></span>
+                <button class="pill muted" style="margin-left:auto;cursor:pointer;border:0" @click.stop="openObj({kind:r.kind,name:r.name,namespace:r.namespace})"><i data-lucide="file-code"></i> YAML</button>
+              </div>
+            </div>
+          </template>
+        </div>
+        <template x-if="!filteredRoutes().length"><div class="empty"><i data-lucide="route"></i><h3>No Routes</h3><p>Nothing matches the current scope/filter.</p></div></template>
+      </div>
+
+      <!-- ============ AI GATEWAY ============ -->
+      <div x-show="view==='ai' && loaded">
+        <div class="grid cards">
+          <template x-for="r in aiRoutes" :key="r.namespace+r.name">
+            <div class="card">
+              <div class="card-head"><i data-lucide="sparkles" style="color:var(--brand)"></i><div class="card-title"><span class="name" x-text="r.name"></span></div></div>
+              <div class="card-body">
+                <div style="margin-bottom:8px"><span class="ns-chip"><i data-lucide="layers"></i><span x-text="r.namespace"></span></span></div>
+                <div class="kv"><span class="k">parents</span><span class="val" x-text="(r.parentRefs||[]).map(p=>p.name).join(', ')"></span></div>
+                <template x-for="(rule,ri) in r.rules" :key="ri">
+                  <div class="rule">
+                    <template x-for="(mm,mi) in rule.matches" :key="mi"><div class="match"><template x-for="h in mm" :key="h"><span class="tag" x-text="h"></span></template></div></template>
+                    <div class="match" style="margin-top:6px"><span class="arrow">↳</span>
+                      <template x-for="b in rule.backendRefs" :key="b.name"><span class="backend tag" x-text="b.name+' w'+b.weight"></span></template>
+                    </div>
+                  </div>
+                </template>
+                <div class="card-foot" style="border:0;padding:8px 0 0;background:none">
+                  <template x-for="c in r.llmRequestCosts" :key="c.key"><span class="pill muted" x-text="c.type"></span></template>
+                </div>
+              </div>
+            </div>
+          </template>
+        </div>
+        <template x-if="!aiRoutes.length"><div class="empty"><i data-lucide="sparkles"></i><h3>No AIGatewayRoutes</h3></div></template>
+      </div>
+
+      <!-- ============ POLICIES ============ -->
+      <div x-show="view==='policies' && loaded">
+        <template x-for="grp in policyGroups()" :key="grp.kind">
+          <div x-show="grp.items.length" style="margin-bottom:8px">
+            <div class="section-title" x-text="grp.kind + ' · ' + grp.items.length"></div>
+            <div class="grid cards">
+              <template x-for="p in grp.items" :key="p.namespace+p.name">
+                <div class="card" style="cursor:pointer" role="button" tabindex="0"
+                     :aria-label="p.kind+' '+p.namespace+'/'+p.name"
+                     @click="openObj({kind:p.kind,name:p.name,namespace:p.namespace})"
+                     @keydown.enter="openObj({kind:p.kind,name:p.name,namespace:p.namespace})" @keydown.space.prevent="openObj({kind:p.kind,name:p.name,namespace:p.namespace})">
+                  <div class="card-head">
+                    <i data-lucide="shield-check" style="color:var(--brand)"></i>
+                    <div class="card-title"><span class="name" x-text="p.name"></span></div>
+                    <span class="pill" :class="p.health" style="margin-left:auto"><i :data-lucide="healthIcon(p.health)"></i><span x-text="p.health"></span></span>
+                  </div>
+                  <div class="card-body">
+                    <div style="margin-bottom:8px"><span class="ns-chip"><i data-lucide="layers"></i><span x-text="p.namespace"></span></span></div>
+                    <div class="section-title" style="margin:10px 0 4px">Targets</div>
+                    <template x-for="(t,ti) in p.targetRefs" :key="ti">
+                      <div class="match"><span class="tag" x-text="t.kind"></span><span class="arrow">→</span><span class="val" x-text="t.name + (t.sectionName ? (':'+t.sectionName) : '')"></span></div>
+                    </template>
+                    <template x-if="!p.targetRefs.length"><div style="font-size:12px;color:var(--text-faint)">no targetRef</div></template>
+                  </div>
+                  <div class="card-foot">
+                    <button class="pill muted" style="margin-left:auto;cursor:pointer;border:0" @click.stop="openObj({kind:p.kind,name:p.name,namespace:p.namespace})"><i data-lucide="file-code"></i> YAML</button>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </div>
+        </template>
+        <template x-if="!policies.length"><div class="empty"><i data-lucide="shield-check"></i><h3>No Policies</h3><p>No Envoy Gateway / AI Gateway policies in scope.</p></div></template>
+      </div>
+
+      <!-- ============ TOPOLOGY ============ -->
+      <div x-show="view==='topology' && loaded">
+        <div class="graph-wrap" x-ref="graphWrap">
+          <svg class="edges" x-ref="edges"></svg>
+          <div class="graph-cols">
+            <template x-for="col in graphColumns()" :key="col.type">
+              <div class="graph-col">
+                <div class="graph-col-title" x-text="col.title"></div>
+                <template x-for="n in col.nodes" :key="n.id">
+                  <div class="node" :class="'h-'+n.health + (hoverId && !related.has(n.id) ? ' dim':'') + (related.has(n.id)?' hl':'')"
+                       :id="'node-'+cssId(n.id)" role="button" tabindex="0" :aria-label="n.type+' '+n.label"
+                       @mouseenter="hover(n.id)" @mouseleave="unhover()" @focus="hover(n.id)" @blur="unhover()"
+                       @click="openNode(n)" @keydown.enter="openNode(n)" @keydown.space.prevent="openNode(n)">
+                    <div class="nt"><i :data-lucide="nodeIcon(n.type)"></i><span x-text="n.type"></span></div>
+                    <div class="nl" x-text="n.label"></div>
+                    <div class="ns" x-text="n.sub"></div>
+                  </div>
+                </template>
+                <template x-if="!col.nodes.length"><div style="font-size:12px;color:var(--text-faint)">none</div></template>
+              </div>
+            </template>
+          </div>
+        </div>
+      </div>
+
+    </section>
+  </main>
+</div>
+
+<!-- ===================== Detail drawer ===================== -->
+<div x-cloak>
+  <div class="scrim" x-show="drawer.open" @click="closeDrawer()"
+       x-transition:enter="fade-enter" x-transition:enter-start="fade-from" x-transition:enter-end="fade-to"
+       x-transition:leave="fade-leave" x-transition:leave-start="fade-to" x-transition:leave-end="fade-from"></div>
+  <div class="drawer" x-show="drawer.open" role="dialog" aria-modal="true" :aria-label="drawer.kind+' '+drawer.name"
+       @keydown.tab="trapTab($event)"
+       x-transition:enter="drawer-enter" x-transition:enter-start="drawer-from" x-transition:enter-end="drawer-to"
+       x-transition:leave="drawer-leave" x-transition:leave-start="drawer-to" x-transition:leave-end="drawer-from">
+    <div class="drawer-head">
+      <span class="pill brand" x-text="drawer.kind"></span>
+      <h3 x-text="drawer.name"></h3>
+      <button class="icon-btn" style="margin-left:auto" x-ref="drawerClose" @click="closeDrawer()" aria-label="Close"><i data-lucide="x"></i></button>
+    </div>
+    <div class="tabs">
+      <button class="tab" :class="drawer.tab==='summary' && 'active'" @click="drawer.tab='summary';renderIcons()">Summary</button>
+      <button class="tab" :class="drawer.tab==='related' && 'active'" @click="drawer.tab='related';renderIcons()">
+        Related <span class="count" x-show="drawer.related.length" x-text="drawer.related.length"></span>
+      </button>
+      <button class="tab" :class="drawer.tab==='yaml' && 'active'" @click="drawer.tab='yaml'">YAML</button>
+    </div>
+    <div class="drawer-body">
+      <template x-if="drawer.loading"><div class="skeleton" style="height:200px"></div></template>
+      <div x-show="drawer.tab==='summary' && !drawer.loading">
+        <div class="kv"><span class="k">namespace</span><span class="val" x-text="drawer.namespace || 'cluster-scoped'"></span></div>
+        <div class="kv" x-show="drawer.raw?.metadata?.creationTimestamp"><span class="k">created</span><span class="val" x-text="timeAgo(drawer.raw?.metadata?.creationTimestamp)"></span></div>
+        <div class="section-title">Conditions</div>
+        <template x-for="c in (drawer.raw?.status?.conditions || drawerConds())" :key="c.type+(c.controller||'')">
+          <div class="problem" style="border-color:var(--border)">
+            <span class="pill" :class="c.status==='True'?'ok':'error'" x-text="c.type"></span>
+            <div style="flex:1"><div style="font-size:12px" x-text="c.reason"></div><div class="reasons" x-text="c.message"></div></div>
+          </div>
+        </template>
+        <template x-if="!(drawer.raw?.status?.conditions || drawerConds()).length"><div style="color:var(--text-muted);font-size:13px">No status conditions reported.</div></template>
+      </div>
+      <div x-show="drawer.tab==='related' && !drawer.loading">
+        <template x-if="drawer.relatedLoading"><div class="skeleton" style="height:120px"></div></template>
+        <template x-for="r in drawer.related" :key="r.relation+r.kind+r.namespace+r.name">
+          <div class="problem" style="border-color:var(--border);cursor:pointer" role="button" tabindex="0"
+               :aria-label="r.relation+' '+r.kind+' '+r.name"
+               @click="openObj(r)" @keydown.enter="openObj(r)" @keydown.space.prevent="openObj(r)">
+            <span class="pill muted" x-text="r.relation"></span>
+            <div style="flex:1;min-width:0">
+              <div><span class="tag" x-text="r.kind"></span> <strong x-text="r.name"></strong></div>
+              <div class="reasons" x-text="r.namespace || 'cluster-scoped'"></div>
+            </div>
+            <span class="pill" :class="r.health"><i :data-lucide="healthIcon(r.health)"></i></span>
+            <i data-lucide="arrow-right" style="width:15px;height:15px;color:var(--text-faint)"></i>
+          </div>
+        </template>
+        <template x-if="!drawer.relatedLoading && !drawer.related.length"><div style="color:var(--text-muted);font-size:13px">No related resources found.</div></template>
+      </div>
+      <div x-show="drawer.tab==='yaml' && !drawer.loading">
+        <div class="code-head">
+          <button class="copy-btn" @click="copy(kubectlCmd(), 'kubectl command copied')"><i data-lucide="terminal"></i> Copy kubectl</button>
+          <button class="copy-btn" @click="copy(drawer.yaml, 'YAML copied')"><i data-lucide="copy"></i> Copy YAML</button>
+        </div>
+        <pre class="yaml" x-text="drawer.yaml"></pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== Access denied ===================== -->
+<div class="denied-scrim" x-show="accessDenied()" x-cloak>
+  <div class="denied-card">
+    <div class="denied-icon"><i data-lucide="shield-x"></i></div>
+    <h2>Access denied</h2>
+    <p>You’re signed in, but your account isn’t in a group that’s allowed to use this dashboard.</p>
+    <div class="denied-who">
+      <span class="user-avatar lg" x-text="userInitials()"></span>
+      <div style="min-width:0">
+        <div class="user-name" x-text="me.name || me.username || 'Unknown'"></div>
+        <div class="user-sub" x-text="me.email || me.username"></div>
+      </div>
+    </div>
+    <div x-show="me.groups && me.groups.length">
+      <div class="section-title">Your groups</div>
+      <div class="chip-row"><template x-for="g in me.groups" :key="g"><span class="chip" x-text="g"></span></template></div>
+    </div>
+    <div x-show="me.allowedGroups && me.allowedGroups.length">
+      <div class="section-title">Allowed groups</div>
+      <div class="chip-row"><template x-for="g in me.allowedGroups" :key="g"><span class="chip parent" x-text="g"></span></template></div>
+    </div>
+    <button class="denied-btn" @click="logout()"><i data-lucide="log-out"></i> Log out</button>
+  </div>
+</div>
+
+<!-- ===================== Command palette (⌘K) ===================== -->
+<div class="palette-scrim" x-show="palette.open" x-cloak @click="closePalette()"
+     x-transition:enter="fade-enter" x-transition:enter-start="fade-from" x-transition:enter-end="fade-to"
+     x-transition:leave="fade-leave" x-transition:leave-start="fade-to" x-transition:leave-end="fade-from">
+  <div class="palette" @click.stop role="dialog" aria-modal="true" aria-label="Search resources">
+    <div class="palette-input">
+      <i data-lucide="search"></i>
+      <input x-ref="paletteInput" x-model="palette.q" @input="palette.sel=0"
+             @keydown.arrow-down.prevent="paletteMove(1)" @keydown.arrow-up.prevent="paletteMove(-1)"
+             @keydown.enter.prevent="paletteEnter()" @keydown.escape.prevent="closePalette()"
+             placeholder="Search gateways, routes, policies…" aria-label="Search resources" />
+      <kbd>esc</kbd>
+    </div>
+    <div class="palette-list">
+      <template x-for="(r,i) in paletteResults()" :key="r.kind+r.namespace+r.name">
+        <div class="palette-item" :class="i===palette.sel && 'sel'" @click="paletteOpen(r)" @mouseenter="palette.sel=i">
+          <span class="pill" :class="r.health" style="width:8px;height:8px;padding:0;border-radius:50%"></span>
+          <i :data-lucide="kindIcon(r.kind)" style="width:16px;height:16px;color:var(--text-muted)"></i>
+          <div style="flex:1;min-width:0">
+            <div class="pi-name" x-text="r.name"></div>
+            <div class="pi-meta" x-text="r.kind + (r.namespace ? ' · '+r.namespace : '')"></div>
+          </div>
+          <i data-lucide="corner-down-left" style="width:14px;height:14px;color:var(--text-faint)" x-show="i===palette.sel"></i>
+        </div>
+      </template>
+      <template x-if="!paletteResults().length"><div class="palette-empty" x-text="palette.q ? 'No matches for “'+palette.q+'”' : 'Type to search across all namespaces'"></div></template>
+    </div>
+    <div class="palette-foot">
+      <span><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
+      <span><kbd>↵</kbd> open</span>
+      <span><kbd>esc</kbd> close</span>
+    </div>
+  </div>
+</div>
+
+<div class="toast" x-show="toast" x-text="toast" x-cloak role="status" aria-live="polite"
+     x-transition:enter="fade-enter" x-transition:enter-start="fade-from" x-transition:enter-end="fade-to"></div>
+</body>
+</html>

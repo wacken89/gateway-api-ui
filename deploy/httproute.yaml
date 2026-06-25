@@ -1,0 +1,22 @@
+# Optional: expose the UI through your existing Gateway (dogfooding — the dashboard
+# then shows its own route). Adjust parentRefs/hostname to your environment, and
+# put SSO (oauth2-proxy / Keycloak) in front before exposing it publicly.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: gateway-api-ui
+  namespace: gateway-api-ui
+spec:
+  parentRefs:
+    - name: cilium-gateway        # <-- your Gateway name
+      namespace: gateway-system   # <-- your Gateway namespace
+  hostnames:
+    - gateway-ui.internal.example  # <-- your hostname
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: gateway-api-ui
+          port: 80

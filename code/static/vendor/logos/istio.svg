@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" role="img" aria-label="Istio">
+  <defs>
+    <linearGradient id="i" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5a82c4"/>
+      <stop offset="1" stop-color="#3f60a8"/>
+    </linearGradient>
+  </defs>
+  <rect width="48" height="48" rx="11" fill="url(#i)"/>
+  <path d="M27 11 27 31 16 31Z" fill="#fff"/>
+  <path d="M30.2 22.5 30.2 31 35.4 31Z" fill="#fff" opacity=".82"/>
+  <rect x="15.5" y="33.2" width="17" height="2.4" rx="1.2" fill="#fff"/>
+</svg>

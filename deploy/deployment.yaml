@@ -1,0 +1,89 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gateway-api-ui
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway-api-ui
+  namespace: gateway-api-ui
+  labels:
+    app.kubernetes.io/name: gateway-api-ui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway-api-ui
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway-api-ui
+    spec:
+      serviceAccountName: gateway-api-ui
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gateway-api-ui
+          image: ghcr.io/OWNER/gateway-api-ui:latest   # replace OWNER with your GitHub org/user
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: CACHE_TTL_SECONDS
+              value: "5"
+            - name: CLUSTER_NAME
+              value: "in-cluster"
+            - name: LOG_LEVEL
+              value: "INFO"
+            # Authorization (off by default). When the gateway runs the Keycloak OIDC
+            # flow in front and forwards identity headers, set AUTH_ENABLED=true and
+            # restrict access with AUTH_ALLOWED_GROUPS (comma-separated, empty = any
+            # authenticated user). Header names below match the SecurityPolicy claim
+            # mapping; the groups header may be base64(JSON) — the app decodes it.
+            - name: AUTH_ENABLED
+              value: "false"
+            # - name: AUTH_ALLOWED_GROUPS
+            #   value: "admins,ai-developers"
+            # - name: AUTH_LOGOUT_PATH
+            #   value: "/logout"
+            # - name: AUTH_NAME_HEADER
+            #   value: "X-Auth-Request-User"
+            # - name: AUTH_USERNAME_HEADER
+            #   value: "X-Auth-Request-Preferred-Username"
+            # - name: AUTH_EMAIL_HEADER
+            #   value: "X-Auth-Request-Email"
+            # - name: AUTH_GROUPS_HEADER
+            #   value: "X-Auth-Request-Groups"
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 3
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 10
+          resources:
+            requests: { cpu: 25m, memory: 96Mi }
+            limits:   { cpu: 250m, memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway-api-ui
+  namespace: gateway-api-ui
+  labels:
+    app.kubernetes.io/name: gateway-api-ui
+spec:
+  selector:
+    app.kubernetes.io/name: gateway-api-ui
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

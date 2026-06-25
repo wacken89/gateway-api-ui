@@ -1,0 +1,18 @@
+apiVersion: v2
+name: gateway-api-ui
+description: Read-only web dashboard for the Kubernetes Gateway API (Envoy / Cilium / NGINX / Istio)
+type: application
+version: 0.3.0
+appVersion: "latest"
+home: https://github.com/OWNER/gateway-api-ui
+sources:
+  - https://github.com/OWNER/gateway-api-ui
+keywords:
+  - gateway-api
+  - envoy
+  - dashboard
+  - kubernetes
+
+maintainers:
+  - name: Roman Prydybailo
+    email: drake0103@gmail.com

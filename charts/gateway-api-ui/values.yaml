@@ -1,0 +1,147 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/OWNER/gateway-api-ui
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # A ServiceAccount is required: the app talks to the kube-apiserver with its token.
+  create: true
+  # MUST be true — the pod needs the projected SA token to read the Gateway API.
+  automount: true
+  annotations: {}
+  name: ""
+
+rbac:
+  # Create the read-only ClusterRole + ClusterRoleBinding the dashboard needs
+  # (get/list/watch on Gateway API + a few core resources). No write verbs.
+  create: true
+  # Extra policy rules appended to the read-only ClusterRole, if ever needed.
+  extraRules: []
+
+# Application configuration (rendered as env vars).
+config:
+  # Server-side cache TTL (seconds) to spare the apiserver on auto-refresh.
+  cacheTtlSeconds: 5
+  # Friendly cluster name shown in the UI. Defaults to the release name.
+  clusterName: ""
+  logLevel: INFO
+
+# Authorization. Authentication itself is done at the edge by Envoy + Keycloak
+# (OIDC SecurityPolicy, managed separately via gateway-api-resources). Here we
+# only enforce a Keycloak group allowlist and show the user / logout in the UI.
+auth:
+  # Master switch. When false the app is fully open (local / kubeconfig use).
+  enabled: false
+  # Keycloak groups allowed to use the dashboard. Empty list = any authenticated
+  # user (still gated by the gateway's OIDC). Leading "/" is optional.
+  allowedGroups: []
+    # - gateway-admins
+  # Path Envoy intercepts to clear the OIDC session (SecurityPolicy logoutPath).
+  logoutPath: /logout
+  # Headers the gateway uses to forward identity (claim -> header mapping in the
+  # SecurityPolicy). Defaults match oauth2-proxy / common Envoy setups.
+  headers:
+    name: X-Auth-Request-User
+    username: X-Auth-Request-Preferred-Username
+    email: X-Auth-Request-Email
+    groups: X-Auth-Request-Groups
+
+extraEnv: []
+  # - name: KUBE_CONTEXT
+  #   value: my-context
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+service:
+  type: ClusterIP
+  port: 80
+
+# Prometheus metrics are always served at /metrics on the http port. Enable the
+# ServiceMonitor if you run the Prometheus Operator.
+metrics:
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    # Extra labels so your Prometheus Operator's serviceMonitorSelector picks it up,
+    # e.g. { release: kube-prometheus-stack }.
+    labels: {}
+    relabelings: []
+    metricRelabelings: []
+
+# Plain Ingress (optional). For Gateway API clusters prefer httpRoute below.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: gateway-ui.internal.example
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: gateway-ui-tls
+  #    hosts:
+  #      - gateway-ui.internal.example
+
+# Expose through your own Gateway (dogfooding — the dashboard then shows its own
+# route). Put SSO (oauth2-proxy / Keycloak) in front before exposing publicly.
+httpRoute:
+  enabled: false
+  parentRefs: []
+    # - name: cilium-gateway
+    #   namespace: gateway-system
+  hostnames: []
+    # - gateway-ui.internal.example
+  annotations: {}
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 96Mi
+  limits:
+    cpu: 250m
+    memory: 256Mi
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 10
+readinessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 3
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 80
+  # targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
