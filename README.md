@@ -1,8 +1,8 @@
 # Gateway API UI
 
-A read-only dashboard for the Kubernetes **Gateway API** (`gateway.networking.k8s.io`) —
-the spiritual successor to the old Traefik dashboard, now that our gateways are Envoy-based
-(Cilium Gateway API for north-south traffic, Envoy AI Gateway for LLM traffic).
+A read-only dashboard for the Kubernetes **Gateway API** (`gateway.networking.k8s.io`) — a
+spiritual successor to the old Traefik dashboard for Envoy-based gateways (Cilium, Envoy Gateway,
+NGINX, Istio, …), including the Envoy AI Gateway.
 
 It visualizes the whole object graph at a glance:
 
@@ -10,7 +10,19 @@ It visualizes the whole object graph at a glance:
 GatewayClass ──▶ Gateway (+ Listeners) ──▶ HTTP/GRPC/TLS/TCP Route ──▶ Backend (Service)
 ```
 
-See [roadmap.md](roadmap.md) for the design rationale and milestones.
+See [ROADMAP.md](ROADMAP.md) for the design rationale and milestones.
+
+## Screenshots
+
+Overview surfaces broken routes with the exact condition reason behind them — the fastest answer
+to "why is my route 404/503?":
+
+![Overview with problem detection](images/gateway-api-ui-1.png)
+
+…and stays quiet when everything is healthy, with a per-type route breakdown, in-cluster context,
+detected providers, and a ⌘K command palette:
+
+![Healthy overview](images/gateway-api-ui-2.png)
 
 ## Features
 
