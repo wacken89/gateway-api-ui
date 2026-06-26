@@ -1,0 +1,16 @@
+# gitleaks config for gateway-api-ui — extends the built-in ruleset and allowlists
+# vendored third-party assets and documented example (non-secret) placeholders.
+title = "gateway-api-ui"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Vendored libraries and example placeholders (no real secrets)"
+paths = [
+  '''code/static/vendor/.*''',   # minified Alpine/Lucide, provider logo SVGs
+  '''.*\.min\.js''',
+]
+regexes = [
+  '''keycloak\.example\.com''',  # example OIDC issuer in README
+]

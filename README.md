@@ -248,8 +248,12 @@ with handcrafted, build-free CSS. No Node/Tailwind build step.
 ## Contributing
 
 Issues and PRs are welcome. The frontend is build-free (vanilla Alpine.js + handcrafted CSS, no
-Node/Tailwind step), so a typical change is just editing `code/` and running `make dev`. CI runs a
-Python/JS syntax check and `helm lint`/`template` on every PR.
+Node/Tailwind step), so a typical change is just editing `code/` and running `make dev`.
+
+CI on every PR runs: a Python/JS syntax check and `helm lint`/`template`, plus a **security
+pipeline** — [gitleaks](https://github.com/gitleaks/gitleaks) secret-leak scanning (full git
+history, weekly schedule too) and a [Trivy](https://github.com/aquasecurity/trivy) dependency/IaC
+scan. See [.github/workflows/security.yml](.github/workflows/security.yml).
 
 ## License
 
