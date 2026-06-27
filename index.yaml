@@ -3,6 +3,28 @@ entries:
   gateway-api-ui:
   - apiVersion: v2
     appVersion: latest
+    created: "2026-06-27T08:24:20.112382659Z"
+    description: Read-only web dashboard for the Kubernetes Gateway API (Envoy / Cilium
+      / NGINX / Istio)
+    digest: 674f10ceaf6ed1f85ab70fceb6f384dfe7e236d02150435d785d4bb393a51928
+    home: https://github.com/wacken89/gateway-api-ui
+    keywords:
+    - gateway-api
+    - envoy
+    - dashboard
+    - kubernetes
+    maintainers:
+    - email: drake0103@gmail.com
+      name: Roman Prydybailo
+    name: gateway-api-ui
+    sources:
+    - https://github.com/wacken89/gateway-api-ui
+    type: application
+    urls:
+    - https://github.com/wacken89/gateway-api-ui/releases/download/gateway-api-ui-1.0.0/gateway-api-ui-1.0.0.tgz
+    version: 1.0.0
+  - apiVersion: v2
+    appVersion: latest
     created: "2026-06-27T08:07:33.704858324Z"
     description: Read-only web dashboard for the Kubernetes Gateway API (Envoy / Cilium
       / NGINX / Istio)
@@ -23,4 +45,4 @@ entries:
     urls:
     - https://github.com/wacken89/gateway-api-ui/releases/download/gateway-api-ui-0.4.0/gateway-api-ui-0.4.0.tgz
     version: 0.4.0
-generated: "2026-06-27T08:07:33.704863574Z"
+generated: "2026-06-27T08:24:20.112387852Z"
