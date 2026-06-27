@@ -24,6 +24,20 @@ jobs:
           git config user.name "$GITHUB_ACTOR"
           git config user.email "$GITHUB_ACTOR@users.noreply.github.com"
 
+      - name: Ensure gh-pages branch exists
+        # chart-releaser needs the gh-pages branch to publish the index into; create
+        # it (empty) on the first run so `cr index` doesn't fail on origin/gh-pages.
+        run: |
+          if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
+            echo "gh-pages already exists"
+          else
+            echo "Creating gh-pages branch..."
+            git switch --orphan gh-pages
+            git commit --allow-empty -m "Initialize gh-pages (Helm chart repo)"
+            git push origin gh-pages
+            git switch "${GITHUB_REF_NAME}"
+          fi
+
       - name: Install Helm
         uses: azure/setup-helm@v4
 
