@@ -1,0 +1,4 @@
+# chart-releaser (cr) config — https://github.com/helm/chart-releaser
+# Packages the charts under ./charts and publishes each version as a GitHub
+# Release, then updates index.yaml on the gh-pages branch (the Helm repo).
+generate-release-notes: true

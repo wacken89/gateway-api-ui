@@ -28,7 +28,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: gateway-api-ui
-          image: ghcr.io/OWNER/gateway-api-ui:latest   # replace OWNER with your GitHub org/user
+          image: wacken/gateway-api-ui:latest
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

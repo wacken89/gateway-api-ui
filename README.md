@@ -102,13 +102,18 @@ docker run --rm -p 8000:8000 -v "$HOME/.kube:/home/appuser/.kube:ro" \
 
 ### Helm (recommended)
 
+From the published Helm repo (GitHub Pages):
+
 ```bash
-helm install gateway-api-ui ./charts/gateway-api-ui \
-  --namespace gateway-api-ui --create-namespace \
-  --set image.repository=ghcr.io/OWNER/gateway-api-ui --set image.tag=latest
+helm repo add gateway-api-ui https://OWNER.github.io/gateway-api-ui
+helm repo update
+helm install gateway-api-ui gateway-api-ui/gateway-api-ui \
+  --namespace gateway-api-ui --create-namespace
 kubectl -n gateway-api-ui port-forward svc/gateway-api-ui 8000:80
 # open http://localhost:8000
 ```
+
+…or straight from this checkout: `helm install gateway-api-ui ./charts/gateway-api-ui -n gateway-api-ui --create-namespace`.
 
 The chart ships a read-only ClusterRole + binding, a non-root Deployment, a Service, and optional
 `ingress` / `httpRoute` (Gateway API) / `ServiceMonitor` / `HPA`. See
@@ -122,11 +127,12 @@ kubectl -n gateway-api-ui port-forward svc/gateway-api-ui 8000:80
 ```
 
 `deploy/` contains `rbac.yaml` (ServiceAccount + read-only ClusterRole), `deployment.yaml`
-(Namespace + non-root Deployment + Service) and an optional `httproute.yaml`. Set the image to your
-own build (`ghcr.io/OWNER/gateway-api-ui`). Put SSO in front before exposing it beyond the cluster.
+(Namespace + non-root Deployment + Service) and an optional `httproute.yaml`. Put SSO in front
+before exposing it beyond the cluster.
 
-> Images are published to `ghcr.io/OWNER/gateway-api-ui` by the GitHub Actions workflow on every
-> push to `main` (`latest`) and on `v*` tags (semver). Replace `OWNER` with your GitHub org/user.
+> **Releases** (GitHub Actions): pushing a `vX.Y.Z` tag builds and pushes the multi-arch image
+> `wacken/gateway-api-ui` to **Docker Hub**; pushing to `main` runs **chart-releaser**, which
+> packages the chart and publishes it to the **Helm repo** on the `gh-pages` branch.
 
 ## Configuration (env vars)
 
