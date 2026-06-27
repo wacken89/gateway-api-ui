@@ -26,14 +26,18 @@ jobs:
 
       - name: Ensure gh-pages branch exists
         # chart-releaser needs the gh-pages branch to publish the index into; create
-        # it (empty) on the first run so `cr index` doesn't fail on origin/gh-pages.
+        # it on the first run (with a landing page) so `cr index` doesn't fail on
+        # origin/gh-pages and the repo root URL isn't a 404.
         run: |
           if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
             echo "gh-pages already exists"
           else
             echo "Creating gh-pages branch..."
             git switch --orphan gh-pages
-            git commit --allow-empty -m "Initialize gh-pages (Helm chart repo)"
+            # Landing page so the repo root URL isn't a 404 (Helm uses /index.yaml).
+            printf '%s\n' '<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0; url=https://github.com/wacken89/gateway-api-ui"><title>Gateway API UI Helm repo</title><a href="https://github.com/wacken89/gateway-api-ui">Gateway API UI</a>' > index.html
+            git add index.html
+            git commit -m "Initialize gh-pages (Helm chart repo)"
             git push origin gh-pages
             git switch "${GITHUB_REF_NAME}"
           fi
