@@ -105,7 +105,7 @@ docker run --rm -p 8000:8000 -v "$HOME/.kube:/home/appuser/.kube:ro" \
 From the published Helm repo (GitHub Pages):
 
 ```bash
-helm repo add gateway-api-ui https://OWNER.github.io/gateway-api-ui
+helm repo add gateway-api-ui https://wacken89.github.io/gateway-api-ui
 helm repo update
 helm install gateway-api-ui gateway-api-ui/gateway-api-ui \
   --namespace gateway-api-ui --create-namespace
