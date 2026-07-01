@@ -20,6 +20,7 @@ function gatewayUI() {
     gatewayClasses: [],
     gateways: [],
     routes: [],
+    routesPage: { items: [], total: 0, offset: 0, limit: 60, loading: false, hasMore: false },
     aiRoutes: [],
     aiAvailable: false,
     policies: [],
@@ -33,7 +34,14 @@ function gatewayUI() {
 
     hoverId: null,
     related: new Set(),
-    drawer: { open: false, tab: 'summary', kind: '', name: '', namespace: '', yaml: '', raw: null, loading: false, related: [], relatedLoading: false },
+    drawer: { open: false, tab: 'summary', kind: '', name: '', namespace: '', yaml: '', raw: null, loading: false, related: [], relatedLoading: false,
+              charts: { loading: false, window: 30, loaded: false, rps: [], p95Ms: [], errorRate: [] } },
+    routeMetrics: {},
+    editor: { open: false, mode: 'create', tab: 'form', title: '', form: null, formAvailable: true, yaml: '', busy: false, error: '', result: null },
+    formNamespaces: [],
+    formServices: { ns: '', items: [], loading: false },
+    formGateways: [],
+    confirm: { open: false, target: null, busy: false },
     palette: { open: false, q: '', sel: 0, items: [] },
     nsPicker: { open: false, q: '', sel: 0 },
     lastFocused: null,
@@ -123,8 +131,7 @@ function gatewayUI() {
           this.gateways = (await this.api('/api/gateways' + q)).items;
           this.counts.gateways = this.gateways.length;
         } else if (this.view === 'routes') {
-          this.routes = (await this.api('/api/routes' + q)).items;
-          this.counts.routes = this.routes.length;
+          await this.loadRoutes(true);
         } else if (this.view === 'ai') {
           this.aiRoutes = (await this.api('/api/ai/routes' + q)).items;
         } else if (this.view === 'policies') {
@@ -217,6 +224,7 @@ function gatewayUI() {
 
     // ---- detail drawer ----
     DRAWER_KINDS: ['GatewayClass', 'Gateway', 'HTTPRoute', 'GRPCRoute', 'TLSRoute', 'TCPRoute', 'AIGatewayRoute', 'SecurityPolicy', 'ClientTrafficPolicy', 'BackendTrafficPolicy', 'BackendSecurityPolicy'],
+    isDrawerKind(kind) { return this.DRAWER_KINDS.includes(kind); },
     async openObj(o) {
       if (!o || !o.kind) return;
       if (!this.DRAWER_KINDS.includes(o.kind)) {
@@ -224,9 +232,13 @@ function gatewayUI() {
         return;
       }
       if (!this.drawer.open) this.lastFocused = document.activeElement;
-      const keepTab = this.drawer.open ? this.drawer.tab : 'summary';
-      this.drawer = { open: true, tab: keepTab, kind: o.kind, name: o.name, namespace: o.namespace || '', yaml: '', raw: null, loading: true, related: [], relatedLoading: true };
+      let keepTab = this.drawer.open ? this.drawer.tab : 'summary';
+      const isRoute = this.routeKinds.includes(o.kind);
+      if (keepTab === 'metrics' && !(isRoute && this.ctx.metricsEnabled)) keepTab = 'summary';
+      this.drawer = { open: true, tab: keepTab, kind: o.kind, name: o.name, namespace: o.namespace || '', yaml: '', raw: null, loading: true, related: [], relatedLoading: true,
+                      charts: { loading: false, window: this.drawer.charts ? this.drawer.charts.window : 30, loaded: false, rps: [], p95Ms: [], errorRate: [] } };
       this.renderIcons();
+      if (keepTab === 'metrics') this.loadCharts();
       this.$nextTick(() => this.$refs.drawerClose && this.$refs.drawerClose.focus());
       const q = o.namespace ? `&namespace=${encodeURIComponent(o.namespace)}` : '';
       const base = `kind=${encodeURIComponent(o.kind)}&name=${encodeURIComponent(o.name)}${q}`;
@@ -246,12 +258,408 @@ function gatewayUI() {
       const parents = this.drawer.raw?.status?.parents || [];
       return parents.flatMap(p => (p.conditions || []).map(c => ({ ...c, controller: p.controllerName })));
     },
+    drawerIsRoute() { return this.routeKinds.includes(this.drawer.kind); },
+    drawerTab(tab) {
+      this.drawer.tab = tab; this.renderIcons();
+      if (tab === 'metrics' && !this.drawer.charts.loaded) this.loadCharts();
+    },
+    async loadCharts() {
+      const d = this.drawer;
+      if (!this.ctx.metricsEnabled || !this.drawerIsRoute()) return;
+      d.charts.loading = true;
+      try {
+        const p = new URLSearchParams({ namespace: d.namespace, name: d.name, window: d.charts.window });
+        const r = await this.api('/api/metrics/route?' + p.toString());
+        d.charts.rps = r.rps || []; d.charts.p95Ms = r.p95Ms || []; d.charts.errorRate = r.errorRate || [];
+        d.charts.loaded = true;
+      } catch (e) { d.charts.rps = []; d.charts.p95Ms = []; d.charts.errorRate = []; }
+      finally { d.charts.loading = false; this.renderIcons(); }
+    },
+    setChartWindow(w) { this.drawer.charts.window = w; this.loadCharts(); },
+    chartCurrent(pts, fmt) { return (pts && pts.length) ? fmt(pts[pts.length - 1][1]) : '—'; },
+    // ---- SVG time-series chart (no chart lib) ----
+    _niceMax(v) {
+      if (v <= 0) return 1;
+      const pow = Math.pow(10, Math.floor(Math.log10(v)));
+      const n = v / pow;
+      const step = n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10;
+      return step * pow;
+    },
+    _hhmm(ts) { const d = new Date(ts * 1000); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); },
+    chartSvg(points, opts = {}) {
+      const fmt = opts.fmt || (v => '' + Math.round(v));
+      if (!points || points.length < 2) return '<div class="chart-empty">no data in this window</div>';
+      const W = 560, H = 150, padL = 46, padR = 10, padT = 10, padB = 20;
+      const color = opts.color || '#6366f1';
+      const t0 = points[0][0], t1 = points[points.length - 1][0];
+      let ymax = this._niceMax(Math.max(...points.map(p => p[1]), opts.floor || 0));
+      const plotW = W - padL - padR, plotH = H - padT - padB;
+      const X = t => padL + ((t - t0) / (t1 - t0 || 1)) * plotW;
+      const Y = v => padT + plotH - (v / ymax) * plotH;
+      const line = points.map((p, i) => (i ? 'L' : 'M') + X(p[0]).toFixed(1) + ' ' + Y(p[1]).toFixed(1)).join(' ');
+      const area = `M${X(t0).toFixed(1)} ${(padT + plotH).toFixed(1)} ` +
+        points.map(p => `L${X(p[0]).toFixed(1)} ${Y(p[1]).toFixed(1)}`).join(' ') +
+        ` L${X(t1).toFixed(1)} ${(padT + plotH).toFixed(1)} Z`;
+      let grid = '';
+      [0, 0.5, 1].forEach(f => {
+        const v = ymax * f, y = Y(v).toFixed(1);
+        grid += `<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" class="chart-grid"/>` +
+          `<text x="${padL - 6}" y="${(+y + 3).toFixed(1)}" class="chart-ytick">${fmt(v)}</text>`;
+      });
+      let xl = '';
+      [[t0, 'start'], [(t0 + t1) / 2, 'middle'], [t1, 'end']].forEach(([t, a]) => {
+        xl += `<text x="${X(t).toFixed(1)}" y="${H - 5}" text-anchor="${a}" class="chart-xtick">${this._hhmm(t)}</text>`;
+      });
+      const uid = 'g' + Math.random().toString(36).slice(2, 7);
+      return `<svg viewBox="0 0 ${W} ${H}" class="chart-svg" role="img">` +
+        `<defs><linearGradient id="${uid}" x1="0" y1="0" x2="0" y2="1">` +
+        `<stop offset="0" stop-color="${color}" stop-opacity="0.22"/><stop offset="1" stop-color="${color}" stop-opacity="0"/></linearGradient></defs>` +
+        grid + `<path d="${area}" fill="url(#${uid})"/><path d="${line}" fill="none" stroke="${color}" stroke-width="1.6" stroke-linejoin="round"/>` +
+        xl + `</svg>`;
+    },
+    fmtAxisRps(v) { return v >= 100 ? Math.round(v) : (v >= 1 ? v.toFixed(1) : v.toFixed(2)); },
+    fmtAxisMs(v) { return Math.round(v) + 'ms'; },
+    fmtAxisPct(v) { return (v * 100).toFixed(v >= 0.1 ? 0 : 1) + '%'; },
     openNode(n) {
       if (!n.ref || !n.ref.kind || n.ref.kind === 'Service') {
         this.notify(n.ref?.kind === 'Service' ? 'Backend Service: ' + n.label : n.label);
         return;
       }
       this.openObj(n.ref);
+    },
+
+    // ---- paginated routes (server-side slim + search) ----
+    async loadRoutes(reset) {
+      if (this.routesPage.loading) return;
+      this.routesPage.loading = true;
+      if (reset) { this.routesPage.offset = 0; this.routesPage.items = []; this.routeMetrics = {}; }
+      try {
+        const p = new URLSearchParams();
+        p.set('limit', this.routesPage.limit);
+        p.set('offset', this.routesPage.offset);
+        if (this.namespace !== 'all') p.set('namespace', this.namespace);
+        if (this.routeType !== 'all') p.set('type', this.routeType);
+        if (this.search.trim()) p.set('q', this.search.trim());
+        const d = await this.api('/api/routes?' + p.toString());
+        this.routesPage.items = reset ? d.items : this.routesPage.items.concat(d.items);
+        this.routesPage.total = d.total;
+        this.routesPage.hasMore = d.hasMore;
+        this.routesPage.offset += d.items.length;
+        this.counts.routes = d.total;
+        this.loadRouteMetricsFor(d.items);
+      } catch (e) {
+        this.notify('Load failed: ' + (e.message || e));
+      } finally { this.routesPage.loading = false; this.renderIcons(); }
+    },
+    loadMoreRoutes() {
+      if (this.routesPage.hasMore && !this.routesPage.loading) this.loadRoutes(false);
+    },
+    onContentScroll(e) {
+      if (this.view !== 'routes' || !this.routesPage.hasMore || this.routesPage.loading) return;
+      const el = e.target;
+      if (el.scrollTop + el.clientHeight >= el.scrollHeight - 320) this.loadMoreRoutes();
+    },
+
+    // ---- route traffic metrics (Prometheus), scoped to the visible page ----
+    async loadRouteMetricsFor(items) {
+      if (!this.ctx.metricsEnabled || !items || !items.length) return;
+      const keys = items.map(r => r.namespace + '/' + r.name).join(',');
+      try {
+        const d = await this.api('/api/metrics/routes?keys=' + encodeURIComponent(keys));
+        this.routeMetrics = { ...this.routeMetrics, ...(d.items || {}) };
+        this.renderIcons();
+      } catch (e) { /* metrics are best-effort */ }
+    },
+    routeMx(r) { return this.routeMetrics[r.namespace + '/' + r.name] || null; },
+    fmtRps(v) { return v >= 100 ? Math.round(v) : (v >= 10 ? v.toFixed(1) : v.toFixed(2)); },
+    fmtErr(v) { return (v * 100).toFixed(v >= 0.1 ? 0 : 1) + '%'; },
+    sparkPoints(pts, w = 80, h = 22) {
+      if (!pts || pts.length < 2) return '';
+      const max = Math.max(...pts, 0.0001), n = pts.length;
+      return pts.map((v, i) => {
+        const x = (i / (n - 1)) * w;
+        const y = h - (v / max) * (h - 2) - 1;
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      }).join(' ');
+    },
+
+    // ---- write mode: create / edit / delete ----
+    routeKinds: ['HTTPRoute', 'GRPCRoute', 'TLSRoute', 'TCPRoute'],
+    routeHasHostnames(kind) { return kind !== 'TCPRoute'; },
+    routeHasPath(kind) { return kind === 'HTTPRoute'; },
+    blankRule() {
+      return { path: { type: 'PathPrefix', value: '/' }, backends: [{ name: '', port: 80, weight: '' }],
+               rewritePrefix: '', setHeaders: [], timeoutRequest: '', timeoutBackend: '' };
+    },
+    blankForm() {
+      return {
+        kind: 'HTTPRoute',
+        name: 'my-route',
+        namespace: this.namespace !== 'all' ? this.namespace : 'default',
+        parent: { name: '', namespace: '', sectionName: '' },
+        hostnames: [''],
+        rules: [this.blankRule()],
+      };
+    },
+    formToYaml() {
+      const f = this.editor.form, L = [];
+      const kind = f.kind || 'HTTPRoute';
+      const apiv = (kind === 'TLSRoute' || kind === 'TCPRoute') ? 'v1alpha2' : 'v1';
+      const isHttp = kind === 'HTTPRoute';
+      L.push('apiVersion: gateway.networking.k8s.io/' + apiv, 'kind: ' + kind, 'metadata:');
+      L.push('  name: ' + (f.name || 'my-route'));
+      L.push('  namespace: ' + (f.namespace || 'default'));
+      L.push('spec:');
+      if (f.parent.name) {
+        L.push('  parentRefs:', '    - name: ' + f.parent.name);
+        if (f.parent.namespace) L.push('      namespace: ' + f.parent.namespace);
+        if (f.parent.sectionName) L.push('      sectionName: ' + f.parent.sectionName);
+      }
+      if (this.routeHasHostnames(kind)) {
+        const hosts = (f.hostnames || []).map(h => h.trim()).filter(Boolean);
+        if (hosts.length) { L.push('  hostnames:'); hosts.forEach(h => L.push('    - ' + h)); }
+      }
+      L.push('  rules:');
+      (f.rules && f.rules.length ? f.rules : [this.blankRule()]).forEach(rule => {
+        const r = [];  // relative lines (rule-item prefix added at the end)
+        if (isHttp) r.push('matches:', '  - path:', '      type: ' + rule.path.type, '      value: ' + (rule.path.value || '/'));
+        const filters = [];
+        if (rule.rewritePrefix) filters.push('- type: URLRewrite', '  urlRewrite:', '    path:', '      type: ReplacePrefixMatch', '      replacePrefixMatch: ' + rule.rewritePrefix);
+        const setH = (rule.setHeaders || []).filter(h => h.name && h.name.trim());
+        if (setH.length) {
+          filters.push('- type: RequestHeaderModifier', '  requestHeaderModifier:', '    set:');
+          setH.forEach(h => filters.push('      - name: ' + h.name, '        value: ' + (h.value ?? '')));
+        }
+        if (filters.length) { r.push('filters:'); filters.forEach(l => r.push('  ' + l)); }
+        if (rule.timeoutRequest || rule.timeoutBackend) {
+          r.push('timeouts:');
+          if (rule.timeoutRequest) r.push('  request: ' + rule.timeoutRequest);
+          if (rule.timeoutBackend) r.push('  backendRequest: ' + rule.timeoutBackend);
+        }
+        const backs = (rule.backends || []).filter(b => b.name && b.name.trim());
+        const list = backs.length ? backs : [{ name: 'my-service', port: 80 }];
+        r.push('backendRefs:');
+        list.forEach(b => {
+          r.push('  - name: ' + b.name, '    port: ' + (b.port || 80));
+          if (b.weight !== '' && b.weight != null && backs.length > 1) r.push('    weight: ' + b.weight);
+        });
+        r.forEach((ln, i) => L.push((i ? '      ' : '    - ') + ln));
+      });
+      return L.join('\n') + '\n';
+    },
+    addHostname() { this.editor.form.hostnames.push(''); },
+    removeHostname(i) { this.editor.form.hostnames.splice(i, 1); if (!this.editor.form.hostnames.length) this.editor.form.hostnames.push(''); },
+    addRule() { this.editor.form.rules.push(this.blankRule()); this.renderIcons(); },
+    removeRule(ri) { this.editor.form.rules.splice(ri, 1); if (!this.editor.form.rules.length) this.addRule(); this.renderIcons(); },
+    addRuleBackend(ri) { this.editor.form.rules[ri].backends.push({ name: '', port: 80, weight: '' }); this.renderIcons(); },
+    removeRuleBackend(ri, bi) { const bs = this.editor.form.rules[ri].backends; bs.splice(bi, 1); if (!bs.length) bs.push({ name: '', port: 80, weight: '' }); this.renderIcons(); },
+    addSetHeader(ri) { this.editor.form.rules[ri].setHeaders.push({ name: '', value: '' }); this.renderIcons(); },
+    removeSetHeader(ri, hi) { this.editor.form.rules[ri].setHeaders.splice(hi, 1); this.renderIcons(); },
+    editorSetTab(tab) {
+      if (tab === 'form' && this.editor.mode === 'edit') this.editor.form = this.objToForm(this.editor.raw);
+      if (tab === 'yaml' && this.editor.tab === 'form') this.editor.yaml = this.formToYaml();
+      this.editor.tab = tab; this.renderIcons();
+      if (tab === 'form') this.ensureFormServices();
+    },
+    // ---- namespace / service pickers ----
+    async loadFormNamespaces() {
+      try { this.formNamespaces = (await this.api('/api/namespaces/all')).namespaces || []; }
+      catch (e) { this.formNamespaces = this.namespaces.slice(); }
+    },
+    async ensureFormServices() {
+      const ns = this.editor.form && this.editor.form.namespace;
+      if (!ns || this.formServices.ns === ns) return;
+      this.formServices = { ns, items: [], loading: true };
+      try { this.formServices.items = (await this.api('/api/services?namespace=' + encodeURIComponent(ns))).items || []; }
+      catch (e) { this.formServices.items = []; }
+      finally { this.formServices.loading = false; this.renderIcons(); }
+    },
+    comboStyle(rect) {
+      // position the dropdown with position:fixed so it escapes the modal's
+      // overflow clipping; flip above the input when there's no room below.
+      if (!rect) return '';
+      const below = window.innerHeight - rect.bottom;
+      const base = `position:fixed;left:${Math.round(rect.left)}px;width:${Math.round(rect.width)}px;right:auto;z-index:90;`;
+      if (below < 220 && rect.top > below) {
+        return base + `bottom:${Math.round(window.innerHeight - rect.top + 4)}px;top:auto;`;
+      }
+      return base + `top:${Math.round(rect.bottom + 4)}px;`;
+    },
+    serviceNames() { return this.formServices.items.map(s => s.name); },
+    servicePorts(name) { const s = this.formServices.items.find(x => x.name === name); return s ? s.ports : []; },
+    // ---- gateway / listener pickers ----
+    async loadFormGateways() {
+      try {
+        const items = (await this.api('/api/gateways')).items || [];
+        this.formGateways = items.map(g => ({ name: g.name, namespace: g.namespace,
+          listeners: (g.listeners || []).map(l => l.name).filter(Boolean) }));
+      } catch (e) { this.formGateways = []; }
+    },
+    gatewayNameOptions() { return [...new Set(this.formGateways.map(g => g.name))]; },
+    gatewayNsOptions() {
+      const n = this.editor.form && this.editor.form.parent.name;
+      const matched = this.formGateways.filter(g => !n || g.name === n).map(g => g.namespace);
+      return [...new Set(matched.length ? matched : this.formGateways.map(g => g.namespace))];
+    },
+    listenerOptions() {
+      const p = (this.editor.form && this.editor.form.parent) || {};
+      const g = this.formGateways.find(x => x.name === p.name && x.namespace === p.namespace)
+             || this.formGateways.find(x => x.name === p.name);
+      return g ? g.listeners : [];
+    },
+    pickGatewayName(name) {
+      const p = this.editor.form.parent;
+      p.name = name;
+      const matches = this.formGateways.filter(g => g.name === name);
+      if (matches.length === 1) p.namespace = matches[0].namespace;
+      if (p.sectionName && !this.listenerOptions().includes(p.sectionName)) p.sectionName = '';
+    },
+    pickService(ri, bi, name) {
+      this.editor.form.rules[ri].backends[bi].name = name;
+      const ports = this.servicePorts(name);
+      if (ports.length) this.editor.form.rules[ri].backends[bi].port = ports[0];
+    },
+    objToForm(raw) {
+      const spec = (raw && raw.spec) || {}, m = (raw && raw.metadata) || {};
+      const p = (spec.parentRefs || [])[0] || {};
+      const rules = (spec.rules || []).map(r => {
+        const path = ((r.matches || [])[0] || {}).path || { type: 'PathPrefix', value: '/' };
+        let rewritePrefix = '', setHeaders = [];
+        (r.filters || []).forEach(f => {
+          if (f.type === 'URLRewrite' && f.urlRewrite?.path?.type === 'ReplacePrefixMatch') rewritePrefix = f.urlRewrite.path.replacePrefixMatch || '';
+          if (f.type === 'RequestHeaderModifier' && f.requestHeaderModifier?.set) setHeaders = f.requestHeaderModifier.set.map(h => ({ name: h.name, value: h.value ?? '' }));
+        });
+        const backs = (r.backendRefs || []).map(b => ({ name: b.name || '', port: b.port || 80, weight: b.weight ?? '' }));
+        return {
+          path: { type: path.type || 'PathPrefix', value: path.value || '/' },
+          backends: backs.length ? backs : [{ name: '', port: 80, weight: '' }],
+          rewritePrefix, setHeaders,
+          timeoutRequest: (r.timeouts || {}).request || '',
+          timeoutBackend: (r.timeouts || {}).backendRequest || '',
+        };
+      });
+      return {
+        kind: (raw && raw.kind) || 'HTTPRoute',
+        name: m.name || '', namespace: m.namespace || 'default',
+        parent: { name: p.name || '', namespace: p.namespace || '', sectionName: p.sectionName || '' },
+        hostnames: (spec.hostnames && spec.hostnames.length) ? spec.hostnames.slice() : [''],
+        rules: rules.length ? rules : [this.blankRule()],
+      };
+    },
+    formRepresentable(raw) {
+      // the form models rules with a single match and only URLRewrite(ReplacePrefixMatch)
+      // + RequestHeaderModifier(set) filters + timeouts. Anything else -> YAML only.
+      if (!raw || !this.routeKinds.includes(raw.kind)) return false;
+      for (const r of ((raw.spec || {}).rules || [])) {
+        if ((r.matches || []).length > 1) return false;
+        for (const f of (r.filters || [])) {
+          if (f.type === 'URLRewrite') {
+            if (f.urlRewrite?.hostname) return false;
+            if (f.urlRewrite?.path && f.urlRewrite.path.type !== 'ReplacePrefixMatch') return false;
+          } else if (f.type === 'RequestHeaderModifier') {
+            if (f.requestHeaderModifier?.add || f.requestHeaderModifier?.remove) return false;
+          } else { return false; }
+        }
+      }
+      return true;
+    },
+    openCreate() {
+      if (!this.ctx.writeEnabled) return;
+      const form = this.blankForm();
+      this.editor = { open: true, mode: 'create', tab: 'form', formAvailable: true,
+        title: 'New route', form, raw: null, yaml: '', busy: false, error: '', result: null };
+      this.formServices = { ns: '', items: [], loading: false };
+      this.loadFormNamespaces();
+      this.loadFormGateways();
+      this.ensureFormServices();
+      this.renderIcons();
+    },
+    securityPolicyTemplate() {
+      const ns = this.namespace !== 'all' ? this.namespace : 'default';
+      return [
+        'apiVersion: gateway.envoyproxy.io/v1alpha1',
+        'kind: SecurityPolicy',
+        'metadata:',
+        '  name: my-policy',
+        '  namespace: ' + ns,
+        'spec:',
+        '  targetRefs:',
+        '    - group: gateway.networking.k8s.io',
+        '      kind: HTTPRoute',
+        '      name: my-route',
+        '  # one of: basicAuth / jwt / oidc / cors / apiKeyAuth / extAuth / authorization',
+        '  cors:',
+        '    allowOrigins:',
+        '      - "https://example.com"',
+        '    allowMethods: ["GET", "POST"]',
+        '',
+      ].join('\n');
+    },
+    openCreateYaml(title, template) {
+      if (!this.ctx.writeEnabled) return;
+      this.editor = { open: true, mode: 'create', tab: 'yaml', formAvailable: false,
+        title, form: this.blankForm(), raw: null, yaml: template, busy: false, error: '', result: null };
+      this.renderIcons();
+      this.$nextTick(() => this.$refs.editorArea && this.$refs.editorArea.focus());
+    },
+    openEdit() {
+      const raw = this.drawer.raw;
+      const canForm = this.formRepresentable(raw);
+      this.editor = { open: true, mode: 'edit', tab: canForm ? 'form' : 'yaml', formAvailable: canForm,
+        title: 'Edit ' + this.drawer.kind + ' · ' + this.drawer.name,
+        form: canForm ? this.objToForm(raw) : this.blankForm(), raw,
+        yaml: this.drawer.yaml || '', busy: false, error: '', result: null };
+      this.formServices = { ns: '', items: [], loading: false };
+      this.loadFormNamespaces();
+      this.loadFormGateways();
+      if (canForm) this.ensureFormServices();
+      this.renderIcons();
+      if (!canForm) this.$nextTick(() => this.$refs.editorArea && this.$refs.editorArea.focus());
+    },
+    closeEditor() { this.editor.open = false; },
+    async applyEditor() {
+      if (this.editor.tab === 'form') this.editor.yaml = this.formToYaml();
+      this.editor.busy = true; this.editor.error = ''; this.editor.result = null;
+      try {
+        const r = await fetch('/api/apply', { method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ yaml: this.editor.yaml }) });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data.detail || r.statusText);
+        this.editor.result = data.results || [];
+        const verbs = this.editor.result.map(x => `${x.action} ${x.kind}/${x.name}`).join(', ');
+        this.notify('✓ ' + (verbs || 'applied'));
+        this.editor.open = false;
+        await this.reload(true);
+      } catch (e) {
+        this.editor.error = String(e.message || e);
+      } finally { this.editor.busy = false; this.renderIcons(); }
+    },
+    deleteObj(o) {
+      // open the in-app confirmation dialog (no native confirm())
+      if (!this.ctx.writeEnabled || !o) return;
+      this.confirm = { open: true, target: o, busy: false };
+      this.renderIcons();
+    },
+    closeConfirm() { if (!this.confirm.busy) this.confirm.open = false; },
+    async confirmDelete() {
+      const o = this.confirm.target;
+      if (!o) return;
+      const label = o.kind + ' ' + (o.namespace ? o.namespace + '/' : '') + o.name;
+      this.confirm.busy = true;
+      try {
+        const q = o.namespace ? `&namespace=${encodeURIComponent(o.namespace)}` : '';
+        const r = await fetch(`/api/object?kind=${encodeURIComponent(o.kind)}&name=${encodeURIComponent(o.name)}${q}`,
+          { method: 'DELETE' });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data.detail || r.statusText);
+        this.confirm.open = false;
+        this.notify('🗑 Deleted ' + label);
+        this.closeDrawer();
+        await this.reload(true);
+      } catch (e) {
+        this.notify('Delete failed: ' + (e.message || e));
+      } finally { this.confirm.busy = false; this.renderIcons(); }
     },
 
     // ---- topology ----
@@ -336,7 +744,9 @@ function gatewayUI() {
       this.$nextTick(() => { if (this.lastFocused && this.lastFocused.focus) this.lastFocused.focus(); });
     },
     onEscape() {
-      if (this.palette.open) this.closePalette();
+      if (this.confirm.open) this.closeConfirm();
+      else if (this.palette.open) this.closePalette();
+      else if (this.editor.open) this.closeEditor();
       else if (this.drawer.open) this.closeDrawer();
     },
     trapTab(e) {

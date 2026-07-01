@@ -12,6 +12,8 @@ kind: ClusterRole
 metadata:
   name: gateway-api-ui-readonly
 rules:
+  # For WRITE_ENABLED=true, add "create","update","patch","delete" to the verbs of
+  # the Gateway API + policy rules below (leave core/discovery read-only).
   - apiGroups: ["gateway.networking.k8s.io"]
     resources:
       - gatewayclasses

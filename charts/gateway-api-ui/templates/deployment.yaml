@@ -48,6 +48,22 @@ spec:
               value: {{ .Values.config.clusterName | default .Release.Name | quote }}
             - name: LOG_LEVEL
               value: {{ .Values.config.logLevel | quote }}
+            - name: WRITE_ENABLED
+              value: {{ .Values.write.enabled | quote }}
+            {{- with .Values.prometheus.url }}
+            - name: PROMETHEUS_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- range $k, $v := .Values.prometheus.queries }}
+            {{- if $v }}
+            - name: PROMETHEUS_QUERY_{{ $k | upper }}
+              value: {{ $v | quote }}
+            {{- end }}
+            {{- end }}
+            {{- with .Values.prometheus.clusterRegex }}
+            - name: PROMETHEUS_CLUSTER_REGEX
+              value: {{ . | quote }}
+            {{- end }}
             - name: AUTH_ENABLED
               value: {{ .Values.auth.enabled | quote }}
             {{- if .Values.auth.enabled }}

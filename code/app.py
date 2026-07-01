@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import yaml
 from fastapi import FastAPI, HTTPException, Query, Request, Response
@@ -18,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 import auth
 import metrics
 import model
+import prom
 from k8s import KIND_REGISTRY, POLICY_KINDS, KubeClient
 from model import ROUTE_KINDS
 
@@ -26,6 +29,47 @@ log = logging.getLogger("gateway-api-ui")
 
 STATIC_DIR = Path(__file__).parent / "static"
 CACHE_TTL = float(os.environ.get("CACHE_TTL_SECONDS", "5"))
+# Write mode is opt-in and contradicts the read-only default — keep it off unless
+# explicitly enabled (and backed by a ClusterRole that grants the write verbs).
+WRITE_ENABLED = os.environ.get("WRITE_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
+# Optional explicit allowlist of Origins for write requests; empty => same-origin only.
+TRUSTED_ORIGINS = {o.strip() for o in os.environ.get("TRUSTED_ORIGINS", "").split(",") if o.strip()}
+
+# Kubernetes ns/name are lowercase DNS names; a metrics key is "<ns>/<name>" and a
+# keys list is comma-separated. Reject anything else so user input can never break
+# out of the Prometheus label selector (PromQL injection).
+_K8S_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9.\-]*$")
+_KEYS_RE = re.compile(r"^[a-z0-9][a-z0-9.\-/,]*$")
+
+
+def _valid_name(value: str | None) -> str | None:
+    if value in (None, "", "all"):
+        return value
+    if not _K8S_NAME_RE.match(value):
+        raise HTTPException(status_code=400, detail="invalid name/namespace")
+    return value
+
+
+def _valid_keys(value: str | None) -> str | None:
+    if not value:
+        return value
+    if len(value) > 8000 or not _KEYS_RE.match(value):
+        raise HTTPException(status_code=400, detail="invalid keys parameter")
+    return value
+
+
+def _check_csrf(request: Request) -> None:
+    """Reject cross-site mutating requests (belt-and-suspenders on top of the
+    JSON-only body + no-CORS design). Compares Origin/Referer host to the request
+    Host; behind Envoy the Host is preserved so same-origin requests pass."""
+    src = request.headers.get("origin") or request.headers.get("referer")
+    if not src:
+        return  # non-browser client (curl/kubectl-style) — nothing to forge
+    host = urlsplit(src).netloc
+    if host in TRUSTED_ORIGINS:
+        return
+    if host and host != request.headers.get("host"):
+        raise HTTPException(status_code=403, detail="cross-origin write blocked")
 
 app = FastAPI(title="Gateway API UI", docs_url="/api/docs", openapi_url="/api/openapi.json")
 app.middleware("http")(metrics.metrics_middleware)
@@ -100,7 +144,9 @@ def context():
         "inCluster": k.in_cluster,
         "context": k.context_name,
         "serverVersion": k.server_version(),
-        "readOnly": True,
+        "readOnly": not WRITE_ENABLED,
+        "writeEnabled": WRITE_ENABLED,
+        "metricsEnabled": prom.enabled(),
     }
 
 
@@ -131,6 +177,26 @@ def namespaces():
         collect(k.list_kind(pk))
     collect(k.list_ai("aigatewayroutes"))
     return {"namespaces": sorted(derived)}
+
+
+@app.get("/api/namespaces/all")
+def namespaces_all():
+    """Every namespace (for the create form's namespace picker)."""
+    return {"namespaces": kube().list_namespaces()}
+
+
+@app.get("/api/services")
+def services(namespace: str = Query(...)):
+    """Services in a namespace, with their ports — powers the backend picker."""
+    k = kube()
+    out = []
+    for key, svc in k.list_services(namespace).items():
+        ns, name = key.split("/", 1)
+        if ns != namespace:
+            continue
+        ports = [p["port"] for p in (svc.get("ports") or []) if p.get("port")]
+        out.append({"name": name, "ports": ports})
+    return {"items": sorted(out, key=lambda x: x["name"])}
 
 
 # ---------------------------------------------------------------------------
@@ -164,11 +230,41 @@ def _all_routes(k: KubeClient, namespace: str | None,
     return out
 
 
+def _route_matches(r: dict, ql: str) -> bool:
+    hay = " ".join([
+        r.get("name") or "", r.get("namespace") or "",
+        " ".join(r.get("hostnames") or []),
+        " ".join(p.get("name") or "" for p in r.get("parentRefs") or []),
+        " ".join(b.get("name") or "" for b in r.get("backends") or []),
+    ]).lower()
+    return ql in hay
+
+
 @app.get("/api/routes")
 def routes(namespace: str | None = Query(default=None),
-           type: str | None = Query(default=None)):
+           type: str | None = Query(default=None),
+           q: str | None = Query(default=None),
+           limit: int = Query(default=100, ge=1, le=1000),
+           offset: int = Query(default=0, ge=0)):
+    """Paginated, slim, server-side-searchable route list.
+
+    The full LIST is still served from the cached kube client, but only a small
+    page of slim summaries crosses the wire — keeps the browser/DOM bounded at
+    1000+ routes. Full per-rule detail is loaded lazily via /api/object.
+    """
     k = kube()
-    return {"items": _all_routes(k, _ns(namespace), type)}
+    ns = _ns(namespace)
+    types = [type] if type and type in ROUTE_KINDS else list(ROUTE_KINDS)
+    items = [model.route_summary(o, t)
+             for t in types for o in k.list_gateway(ROUTE_KINDS[t], ns)]
+    if q and q.strip():
+        ql = q.strip().lower()
+        items = [r for r in items if _route_matches(r, ql)]
+    items.sort(key=lambda r: ((r.get("namespace") or ""), r.get("name") or ""))
+    total = len(items)
+    page = items[offset:offset + limit]
+    return {"items": page, "total": total, "offset": offset,
+            "limit": limit, "hasMore": offset + limit < total}
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +346,111 @@ def object_detail(kind: str, name: str, namespace: str | None = Query(default=No
             o.get("metadata", {}).pop("managedFields", None)
             return {"raw": o, "yaml": yaml.safe_dump(o, sort_keys=False, allow_unicode=True)}
     raise HTTPException(status_code=404, detail=f"{kind}/{name} not found")
+
+
+# ---------------------------------------------------------------------------
+# route traffic metrics (optional, Prometheus)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/metrics/check")
+def metrics_check():
+    """Diagnostics for the Prometheus integration (reachability + sample labels)."""
+    return prom.diagnose()
+
+
+@app.get("/api/metrics/route")
+def metrics_route(namespace: str = Query(...), name: str = Query(...),
+                  window: int = Query(default=30, ge=5, le=1440)):
+    """Time series (rps / p95 / error-rate) for one route — powers the drawer charts."""
+    _valid_name(namespace)
+    _valid_name(name)
+    if not prom.enabled():
+        return {"enabled": False}
+    # step: keep ~60-120 points across the window
+    step = max(15, (window * 60) // 90)
+    try:
+        return prom.route_timeseries(f"{namespace}/{name}", window, step)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("prometheus timeseries failed: %s", exc)
+        return {"enabled": True, "error": str(exc), "rps": [], "p95Ms": [], "errorRate": []}
+
+
+@app.get("/api/metrics/routes")
+def metrics_routes(namespace: str | None = Query(default=None),
+                   keys: str | None = Query(default=None)):
+    """Per-route RPS / p95 / error-rate + sparkline, keyed by '<ns>/<name>'.
+
+    Pass `keys=ns/name,ns/name,…` (the visible page) to scope the Prometheus
+    queries to just those routes. Returns {"enabled": false} when unconfigured.
+    """
+    _valid_keys(keys)
+    if not prom.enabled():
+        return {"enabled": False, "items": {}}
+    key_list = [x for x in (keys.split(",") if keys else []) if x.strip()]
+    try:
+        data = prom.route_metrics(key_list or None)
+    except Exception as exc:  # noqa: BLE001 — metrics must never break a page
+        log.warning("prometheus query failed: %s", exc)
+        return {"enabled": True, "items": {}, "error": str(exc)}
+    if not key_list and namespace and namespace != "all":
+        data = {k: v for k, v in data.items() if k.startswith(f"{namespace}/")}
+    return {"enabled": True, "items": data}
+
+
+# ---------------------------------------------------------------------------
+# write operations (opt-in, WRITE_ENABLED) — create / update / delete
+# ---------------------------------------------------------------------------
+
+def _require_write(request: Request):
+    if not WRITE_ENABLED:
+        raise HTTPException(status_code=403, detail="write mode disabled (WRITE_ENABLED=false)")
+    _check_csrf(request)
+
+
+@app.post("/api/apply")
+def apply_manifest(request: Request, body: dict):
+    """Create or update one or more objects from a YAML manifest (write mode)."""
+    _require_write(request)
+    k = kube()
+    raw = body.get("yaml")
+    if not raw or not raw.strip():
+        raise HTTPException(status_code=400, detail="empty manifest")
+    try:
+        docs = [d for d in yaml.safe_load_all(raw) if d]
+    except yaml.YAMLError as exc:
+        raise HTTPException(status_code=400, detail=f"invalid YAML: {exc}") from exc
+    if not docs:
+        raise HTTPException(status_code=400, detail="no objects in manifest")
+    results = []
+    for doc in docs:
+        try:
+            res = k.apply_object(doc)
+            results.append({"kind": doc.get("kind"),
+                            "name": doc.get("metadata", {}).get("name"),
+                            "namespace": doc.get("metadata", {}).get("namespace"),
+                            "action": res["action"]})
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001 — surface apiserver errors to the UI
+            detail = getattr(exc, "body", None) or str(exc)
+            raise HTTPException(status_code=422, detail=f"apply failed: {detail}") from exc
+    return {"results": results}
+
+
+@app.delete("/api/object")
+def delete_object(request: Request, kind: str, name: str, namespace: str | None = Query(default=None)):
+    _require_write(request)
+    k = kube()
+    if kind not in KIND_REGISTRY:
+        raise HTTPException(status_code=400, detail=f"unsupported kind {kind}")
+    try:
+        k.delete_object(kind, name, _ns(namespace))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        detail = getattr(exc, "body", None) or str(exc)
+        raise HTTPException(status_code=422, detail=f"delete failed: {detail}") from exc
+    return {"deleted": {"kind": kind, "name": name, "namespace": namespace}}
 
 
 # ---------------------------------------------------------------------------

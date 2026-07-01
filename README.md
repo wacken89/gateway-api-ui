@@ -1,8 +1,8 @@
 # Gateway API UI
 
-A read-only dashboard for the Kubernetes **Gateway API** (`gateway.networking.k8s.io`) — a
-spiritual successor to the old Traefik dashboard for Envoy-based gateways (Cilium, Envoy Gateway,
-NGINX, Istio, …), including the Envoy AI Gateway.
+A dashboard for the Kubernetes **Gateway API** (`gateway.networking.k8s.io`) — a spiritual
+successor to the old Traefik dashboard for Envoy-based gateways (Cilium, Envoy Gateway, NGINX,
+Istio, …), including the Envoy AI Gateway. Read-only by default, with optional write mode.
 
 It visualizes the whole object graph at a glance:
 
@@ -49,7 +49,12 @@ detected providers, and a ⌘K command palette:
 - 📋 **Copy YAML / copy `kubectl` command** straight from the detail drawer.
 - 🌗 Light/dark theme, namespace selector, per-view filter, configurable auto-refresh, with
   stale-while-revalidate updates (content never blanks on refresh) and a top progress bar.
-- 🔐 **Strictly read-only** (`get`/`list`/`watch` only), non-root container, minimal RBAC.
+- 📈 **Route traffic metrics** (optional) — RPS / p95 latency / error-rate + sparkline per route,
+  pulled from **Prometheus**.
+- ✏️ **Write mode** (optional, off by default) — create / edit / delete Gateway API objects from a
+  YAML editor for quick debugging, gated by RBAC + auth.
+- 🔐 **Read-only by default** (`get`/`list`/`watch`), non-root container, minimal RBAC, optional
+  `NetworkPolicy` to keep direct pod access restricted to the gateway.
 
 ### Keyboard shortcuts
 
@@ -115,9 +120,10 @@ kubectl -n gateway-api-ui port-forward svc/gateway-api-ui 8000:80
 
 …or straight from this checkout: `helm install gateway-api-ui ./charts/gateway-api-ui -n gateway-api-ui --create-namespace`.
 
-The chart ships a read-only ClusterRole + binding, a non-root Deployment, a Service, and optional
-`ingress` / `httpRoute` (Gateway API) / `ServiceMonitor` / `HPA`. See
-[charts/gateway-api-ui/values.yaml](charts/gateway-api-ui/values.yaml).
+The chart ships a ClusterRole (read-only by default, write verbs via `write.enabled`) + binding, a
+non-root Deployment, a Service, and optional `ingress` / `httpRoute` (Gateway API) /
+`ServiceMonitor` / `HPA` / `NetworkPolicy` (restrict direct pod access to the gateway + Prometheus).
+See [charts/gateway-api-ui/values.yaml](charts/gateway-api-ui/values.yaml).
 
 ### Plain manifests
 
@@ -147,6 +153,32 @@ before exposing it beyond the cluster.
 | `AUTH_ALLOWED_GROUPS`| —             | comma-separated Keycloak groups allowed in (empty = any authenticated) |
 | `AUTH_LOGOUT_PATH`   | `/logout`     | path Envoy intercepts to end the OIDC session       |
 | `AUTH_*_HEADER`      | `X-Auth-Request-*` | headers the gateway forwards identity in (`NAME`/`USERNAME`/`EMAIL`/`GROUPS`) |
+| `WRITE_ENABLED`      | `false`       | enable create/edit/delete from the UI (needs write RBAC) |
+| `PROMETHEUS_URL`     | —             | Prometheus base URL; enables per-route traffic metrics |
+| `PROMETHEUS_QUERY_*` | Envoy GW defaults | override the `RPS` / `P95` / `ERROR_RATE` PromQL (`{range}` = window) |
+| `PROMETHEUS_CLUSTER_REGEX` | `^httproute/(?P<ns>…)/(?P<name>…)` | maps the metric label back to a route |
+
+## Write mode (optional)
+
+The dashboard is **read-only by default**. Set `WRITE_ENABLED=true` (and grant the write verbs in
+RBAC — `helm … --set write.enabled=true` does both) to turn on create / edit / delete:
+
+- a **New** button (top bar) opens a YAML/form editor prefilled with an HTTPRoute template;
+- **Edit** / **Delete** appear in the detail drawer;
+- **Apply** sends the manifest to `POST /api/apply` (multi-doc YAML supported), which create-or-replaces
+  each object. Great for **quick debugging** — tweak a route and apply without leaving the UI.
+
+Writes go through the same auth gate as reads, are CSRF-protected (same-origin check), and put it
+behind SSO + a restricted group.
+
+## Route traffic metrics (optional, Prometheus)
+
+Set `PROMETHEUS_URL` to enrich route cards with live **RPS / p95 latency / error-rate + a sparkline**,
+and open a route's drawer for a **Metrics** tab with full time-series charts. Queries are templated
+and default to Envoy Gateway's per-cluster Envoy stats; override
+`PROMETHEUS_QUERY_RPS|P95|ERROR_RATE` and `PROMETHEUS_CLUSTER_REGEX` to fit your metrics pipeline.
+A few grouped queries cover every route (not one-per-route), scoped to just the routes currently on
+screen; if Prometheus is unreachable the block just hides.
 
 ## Authentication & authorization
 
@@ -195,7 +227,9 @@ spec:
 
 Then in the chart: `auth.enabled=true`, `auth.allowedGroups={gateway-admins}`.
 
-## API (read-only)
+## API
+
+Read endpoints are always available; the write endpoints only when `WRITE_ENABLED=true`.
 
 | Endpoint                                   | Returns                                  |
 |--------------------------------------------|------------------------------------------|
@@ -211,6 +245,9 @@ Then in the chart: `auth.enabled=true`, `auth.allowedGroups={gateway-admins}`.
 | `GET /api/object?kind=&name=&namespace=`   | raw object + YAML                        |
 | `GET /api/related?kind=&name=&namespace=`  | clickable related resources + their health |
 | `GET /api/ai/routes?namespace=`            | Envoy AIGatewayRoutes (if CRD present)   |
+| `GET /api/metrics/routes?namespace=`       | per-route RPS / p95 / error-rate + sparkline (Prometheus) |
+| `POST /api/apply`                          | create/replace from YAML manifest — **write mode** |
+| `DELETE /api/object?kind=&name=&namespace=`| delete an object — **write mode**        |
 | `GET /metrics`                             | Prometheus metrics (see below)           |
 | `GET /healthz`                             | liveness/readiness                       |
 
@@ -250,6 +287,10 @@ with handcrafted, build-free CSS. No Node/Tailwind build step.
   apiserver serves.
 - If the ServiceAccount can't list namespaces cluster-wide, the namespace list is derived from the
   objects it *can* see.
+- **Scales to 1000+ routes**: the Routes view is server-paginated (slim payloads, infinite scroll)
+  with server-side search; full per-rule detail loads lazily in the drawer. Prometheus metrics are
+  fetched only for the routes currently on screen (`/api/metrics/routes?keys=…` scopes the PromQL),
+  so neither the browser nor Prometheus is hit with everything at once.
 
 ## Contributing
 

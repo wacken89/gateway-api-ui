@@ -19,10 +19,11 @@ serviceAccount:
   name: ""
 
 rbac:
-  # Create the read-only ClusterRole + ClusterRoleBinding the dashboard needs
-  # (get/list/watch on Gateway API + a few core resources). No write verbs.
+  # Create the ClusterRole + ClusterRoleBinding the dashboard needs (get/list/watch
+  # on Gateway API + a few core resources). Write verbs are added only when
+  # write.enabled is true below.
   create: true
-  # Extra policy rules appended to the read-only ClusterRole, if ever needed.
+  # Extra policy rules appended to the ClusterRole, if ever needed.
   extraRules: []
 
 # Application configuration (rendered as env vars).
@@ -32,6 +33,25 @@ config:
   # Friendly cluster name shown in the UI. Defaults to the release name.
   clusterName: ""
   logLevel: INFO
+
+# Write mode (create / edit / delete Gateway API objects from the UI). OFF by
+# default — the dashboard is read-only. Enabling this grants the ClusterRole the
+# write verbs (create/update/patch/delete) on Gateway API + policy resources, so
+# gate it behind auth (and ideally a dedicated group) before turning it on.
+write:
+  enabled: false
+
+# Optional Prometheus integration: shows per-route RPS / p95 / error-rate +
+# sparkline. Leave url empty to disable. Queries are templated ({range} window)
+# and default to Envoy Gateway's per-cluster Envoy stats — override to match your
+# pipeline. clusterRegex extracts <namespace>/<name> from the series label.
+prometheus:
+  url: ""
+  # clusterRegex: "^httproute/(?P<ns>[^/]+)/(?P<name>[^/]+)"
+  queries: {}
+    # rps: 'sum by (envoy_cluster_name) (rate(envoy_cluster_upstream_rq_total[{range}]))'
+    # p95: 'histogram_quantile(0.95, sum by (envoy_cluster_name, le) (rate(envoy_cluster_upstream_rq_time_bucket[{range}])))'
+    # error_rate: '...'
 
 # Authorization. Authentication itself is done at the edge by Envoy + Keycloak
 # (OIDC SecurityPolicy, managed separately via gateway-api-resources). Here we
@@ -52,6 +72,28 @@ auth:
     username: X-Auth-Request-Preferred-Username
     email: X-Auth-Request-Email
     groups: X-Auth-Request-Groups
+
+# Restricts which pods may reach the dashboard's Service directly. Defense in
+# depth for auth.headers: Envoy's SecurityPolicy overwrites X-Auth-Request-*
+# on the way in, but only for traffic that actually goes through the gateway.
+# Without this, any pod in the cluster could bypass the gateway and hit the
+# Service directly with forged identity headers. Kubelet liveness/readiness
+# probes are unaffected (most CNIs exempt node health checks from policy).
+networkPolicy:
+  enabled: false
+  # Extra "from" peers allowed on the http port, merged with same-namespace
+  # traffic below. Add your Gateway's Envoy proxy pods and, if scraped
+  # directly (rather than via the ServiceMonitor), your Prometheus pod.
+  from: []
+    # - namespaceSelector:
+    #     kubernetes.io/metadata.name: gateway-system
+    # - namespaceSelector:
+    #     kubernetes.io/metadata.name: monitoring
+    #   podSelector:
+    #     matchLabels:
+    #       app.kubernetes.io/name: prometheus
+  # Also allow traffic from other pods in this release's namespace.
+  allowSameNamespace: true
 
 extraEnv: []
   # - name: KUBE_CONTEXT

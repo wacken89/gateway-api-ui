@@ -5,12 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Gateway API UI</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><rect width='24' height='24' rx='6' fill='%236366f1'/><g stroke='white' stroke-width='1.7' stroke-linecap='round' fill='none'><path d='M6.4 12C11 9.4 12.4 6.9 16.6 6.4'/><path d='M6.8 12H16'/><path d='M6.4 12C11 14.6 12.4 17.1 16.6 17.6'/></g><g fill='white'><circle cx='4.8' cy='12' r='2.4'/><circle cx='18.2' cy='6.4' r='1.7'/><circle cx='18.2' cy='12' r='1.7'/><circle cx='18.2' cy='17.6' r='1.7'/></g></svg>" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/app.css" />
   <script>
-    // Apply saved theme before first paint (default: dark to match SRE tooling).
-    if (localStorage.getItem('theme') !== 'light') document.documentElement.classList.add('dark');
+    // Apply saved theme before first paint. Default: light (dark sidebar) like the design.
+    if (localStorage.getItem('theme') === 'dark') document.documentElement.classList.add('dark');
   </script>
-  <!-- locally vendored, no external CDN required -->
+  <!-- Alpine + Lucide vendored locally; Inter falls back to system-ui if offline. -->
   <script src="/vendor/lucide.min.js"></script>
   <script src="/app.js"></script>
   <script defer src="/vendor/alpine.min.js"></script>
@@ -21,7 +24,7 @@
 
   <!-- ===================== Sidebar ===================== -->
   <aside class="sidebar">
-    <div class="brand">
+    <button class="brand" @click="go('overview')" title="Go to Overview" aria-label="Go to Overview">
       <div class="brand-logo" aria-hidden="true">
         <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
           <path d="M6.4 12C11 9.4 12.4 6.9 16.6 6.4"/>
@@ -33,11 +36,11 @@
           <circle cx="18.2" cy="17.6" r="1.7" fill="#fff" stroke="none"/>
         </svg>
       </div>
-      <div>
+      <div style="text-align:left">
         <h1>Gateway API</h1>
         <p>Gateway API dashboard</p>
       </div>
-    </div>
+    </button>
 
     <!-- Cluster / context card -->
     <div class="cluster-card">
@@ -51,7 +54,8 @@
       </div>
       <div class="cluster-meta">
         <span class="mchip" x-show="ctx.serverVersion"><i data-lucide="boxes"></i> k8s <span x-text="ctx.serverVersion"></span></span>
-        <span class="mchip"><i data-lucide="eye"></i> read-only</span>
+        <span class="mchip" x-show="!ctx.writeEnabled"><i data-lucide="eye"></i> read-only</span>
+        <span class="mchip mchip--write" x-show="ctx.writeEnabled"><i data-lucide="pencil"></i> write</span>
         <span class="mchip" x-show="namespace!=='all'"><i data-lucide="layers"></i> <span x-text="namespace"></span></span>
       </div>
       <div x-show="ctx.error" class="ctx-err" x-text="ctx.error"></div>
@@ -142,7 +146,8 @@
 
       <div class="field hide-sm" x-show="view!=='gatewayclasses' && view!=='topology'">
         <i data-lucide="filter"></i>
-        <input class="input" placeholder="Filter this view…" x-model="search" aria-label="Filter current view" />
+        <input class="input" :placeholder="view==='routes' ? 'Search routes…' : 'Filter this view…'" x-model="search"
+               @input.debounce.350ms="view==='routes' && loadRoutes(true)" aria-label="Filter current view" />
       </div>
 
       <div class="ns-picker" @keydown.escape="nsPicker.open=false" @click.outside="nsPicker.open=false">
@@ -177,7 +182,7 @@
       </div>
 
       <div class="field hide-sm" x-show="view==='routes'">
-        <select class="select" x-model="routeType" @change="renderIcons()">
+        <select class="select" x-model="routeType" @change="loadRoutes(true)">
           <option value="all">All routes</option>
           <option value="http">HTTP</option>
           <option value="grpc">GRPC</option>
@@ -186,18 +191,22 @@
         </select>
       </div>
 
+      <button class="btn btn--primary btn--sm" x-show="ctx.writeEnabled" @click="openCreate()" title="Create a resource">
+        <i data-lucide="plus"></i> <span class="hide-sm">New route</span>
+      </button>
+
       <button class="icon-btn" :class="auto && 'on'" @click="toggleAuto()" :title="auto ? 'Auto-refresh on ('+interval+'s)' : 'Auto-refresh off'">
         <i data-lucide="timer"></i>
       </button>
       <button class="icon-btn" :class="loading && 'spinning'" @click="reload(true)" title="Refresh">
         <i data-lucide="refresh-cw"></i>
       </button>
-      <button class="icon-btn" @click="toggleTheme()" title="Toggle theme">
-        <i :data-lucide="dark ? 'sun' : 'moon'"></i>
+      <button class="icon-btn" @click="toggleTheme()" :title="dark ? 'Switch to light theme' : 'Switch to dark theme'" aria-label="Toggle theme">
+        <i data-lucide="sun-moon"></i>
       </button>
     </header>
 
-    <section class="content" id="content" tabindex="-1">
+    <section class="content" id="content" tabindex="-1" @scroll.passive="onContentScroll($event)">
 
       <!-- loading skeletons -->
       <template x-if="loading && !loaded">
@@ -315,10 +324,14 @@
         <template x-if="!filtered(gateways).length"><div class="empty"><i data-lucide="door-open"></i><h3>No Gateways</h3><p>Nothing matches the current scope.</p></div></template>
       </div>
 
-      <!-- ============ ROUTES ============ -->
+      <!-- ============ ROUTES (paginated, slim) ============ -->
       <div x-show="view==='routes' && loaded">
+        <div class="list-meta" x-show="routesPage.total">
+          <span><strong x-text="routesPage.items.length"></strong> of <strong x-text="routesPage.total"></strong> routes</span>
+          <span class="list-meta-hint" x-show="search.trim()">· filtered by “<span x-text="search.trim()"></span>”</span>
+        </div>
         <div class="grid cards">
-          <template x-for="r in filteredRoutes()" :key="r.routeType+r.namespace+r.name">
+          <template x-for="r in routesPage.items" :key="r.routeType+r.namespace+r.name">
             <div class="card" style="cursor:pointer" role="button" tabindex="0"
                  :aria-label="r.kind+' '+r.namespace+'/'+r.name"
                  @click="openObj({kind:r.kind,name:r.name,namespace:r.namespace})"
@@ -341,33 +354,47 @@
                   </template>
                   <span x-show="!(r.parentRefs||[]).length" class="val">—</span>
                 </div>
-                <template x-for="(rule,ri) in r.rules" :key="ri">
+                <template x-for="(rule,ri) in (r.rules||[])" :key="ri">
                   <div class="rule">
-                    <template x-for="(m,mi) in (rule.matches||[{path:'',method:null,headers:[]}])" :key="mi">
-                      <div class="match">
-                        <span class="tag" x-show="m.method" x-text="m.method"></span>
-                        <span x-text="m.path || 'any'"></span>
-                        <template x-for="h in (m.headers||[])" :key="h"><span class="tag" x-text="h"></span></template>
-                      </div>
-                    </template>
+                    <div class="match">
+                      <span class="tag" x-show="rule.method" x-text="rule.method"></span>
+                      <span x-text="rule.path || 'any'"></span>
+                    </div>
                     <div class="match" style="margin-top:6px">
                       <span class="arrow">↳</span>
-                      <template x-for="b in rule.backendRefs" :key="b.name+b.port">
-                        <span class="backend tag"><i data-lucide="server" style="width:11px;height:11px"></i><span x-text="b.name+':'+b.port"></span><span x-show="rule.backendRefs.length>1" style="color:var(--brand)" x-text="' w'+b.weight"></span></span>
+                      <template x-for="b in rule.backends" :key="b.name+':'+b.port">
+                        <span class="backend tag"><i data-lucide="server" style="width:11px;height:11px"></i><span x-text="b.name+':'+b.port"></span></span>
                       </template>
+                      <span x-show="!(rule.backends||[]).length" class="val">—</span>
                       <template x-for="f in (rule.filters||[])" :key="f"><span class="pill brand" x-text="f"></span></template>
                     </div>
                   </div>
                 </template>
+                <template x-if="ctx.metricsEnabled && routeMx(r)">
+                  <div class="mx-row">
+                    <div class="mx"><span class="mx-k">RPS</span><span class="mx-v" x-text="fmtRps(routeMx(r).rps)"></span></div>
+                    <div class="mx"><span class="mx-k">p95</span><span class="mx-v" x-text="routeMx(r).p95Ms + 'ms'"></span></div>
+                    <div class="mx" :class="routeMx(r).errorRate > 0.01 && 'bad'"><span class="mx-k">err</span><span class="mx-v" x-text="fmtErr(routeMx(r).errorRate)"></span></div>
+                    <svg class="spark" viewBox="0 0 80 22" preserveAspectRatio="none" x-show="routeMx(r).spark && routeMx(r).spark.length>1">
+                      <polyline :points="sparkPoints(routeMx(r).spark)" fill="none" stroke="currentColor" stroke-width="1.5" vector-effect="non-scaling-stroke"/>
+                    </svg>
+                  </div>
+                </template>
               </div>
               <div class="card-foot">
-                <span x-text="r.rules.length+' rule(s) · '+r.backendCount+' backend(s)'"></span>
+                <span x-text="r.ruleCount+' rule(s) · '+r.backendCount+' backend(s)'"></span>
                 <button class="pill muted" style="margin-left:auto;cursor:pointer;border:0" @click.stop="openObj({kind:r.kind,name:r.name,namespace:r.namespace})"><i data-lucide="file-code"></i> YAML</button>
               </div>
             </div>
           </template>
         </div>
-        <template x-if="!filteredRoutes().length"><div class="empty"><i data-lucide="route"></i><h3>No Routes</h3><p>Nothing matches the current scope/filter.</p></div></template>
+        <div class="list-foot" x-show="routesPage.hasMore || routesPage.loading">
+          <button class="btn btn--secondary" :class="routesPage.loading && 'busy'" :disabled="routesPage.loading" @click="loadMoreRoutes()" x-show="routesPage.hasMore">
+            <i :data-lucide="routesPage.loading ? 'loader-2' : 'chevron-down'"></i>
+            <span x-text="routesPage.loading ? 'Loading…' : 'Load more'"></span>
+          </button>
+        </div>
+        <template x-if="!routesPage.items.length && !routesPage.loading"><div class="empty"><i data-lucide="route"></i><h3>No Routes</h3><p x-text="search.trim() ? 'No routes match your search.' : 'Nothing in the current scope.'"></p></div></template>
       </div>
 
       <!-- ============ AI GATEWAY ============ -->
@@ -399,6 +426,11 @@
 
       <!-- ============ POLICIES ============ -->
       <div x-show="view==='policies' && loaded">
+        <div class="view-actions" x-show="ctx.writeEnabled">
+          <button class="btn btn--primary btn--sm" @click="openCreateYaml('New SecurityPolicy', securityPolicyTemplate())">
+            <i data-lucide="plus"></i> Add policy
+          </button>
+        </div>
         <template x-for="grp in policyGroups()" :key="grp.kind">
           <div x-show="grp.items.length" style="margin-bottom:8px">
             <div class="section-title" x-text="grp.kind + ' · ' + grp.items.length"></div>
@@ -471,16 +503,24 @@
        x-transition:enter="drawer-enter" x-transition:enter-start="drawer-from" x-transition:enter-end="drawer-to"
        x-transition:leave="drawer-leave" x-transition:leave-start="drawer-to" x-transition:leave-end="drawer-from">
     <div class="drawer-head">
-      <span class="pill brand" x-text="drawer.kind"></span>
-      <h3 x-text="drawer.name"></h3>
-      <button class="icon-btn" style="margin-left:auto" x-ref="drawerClose" @click="closeDrawer()" aria-label="Close"><i data-lucide="x"></i></button>
+      <div class="drawer-head-row">
+        <span class="pill brand" x-text="drawer.kind"></span>
+        <div class="drawer-actions">
+          <button class="btn btn--secondary btn--sm" x-show="ctx.writeEnabled && !drawer.loading" @click="openEdit()"><i data-lucide="pencil"></i> Edit</button>
+          <button class="btn btn--danger btn--sm" x-show="ctx.writeEnabled && !drawer.loading" @click="deleteObj({kind:drawer.kind,name:drawer.name,namespace:drawer.namespace})"><i data-lucide="trash-2"></i> Delete</button>
+          <button class="icon-btn" x-ref="drawerClose" @click="closeDrawer()" aria-label="Close"><i data-lucide="x"></i></button>
+        </div>
+      </div>
+      <h3 class="drawer-title" x-text="drawer.name"></h3>
+      <div class="drawer-sub" x-show="drawer.namespace" x-text="drawer.namespace"></div>
     </div>
     <div class="tabs">
-      <button class="tab" :class="drawer.tab==='summary' && 'active'" @click="drawer.tab='summary';renderIcons()">Summary</button>
-      <button class="tab" :class="drawer.tab==='related' && 'active'" @click="drawer.tab='related';renderIcons()">
+      <button class="tab" :class="drawer.tab==='summary' && 'active'" @click="drawerTab('summary')">Summary</button>
+      <button class="tab" x-show="ctx.metricsEnabled && drawerIsRoute()" :class="drawer.tab==='metrics' && 'active'" @click="drawerTab('metrics')">Metrics</button>
+      <button class="tab" :class="drawer.tab==='related' && 'active'" @click="drawerTab('related')">
         Related <span class="count" x-show="drawer.related.length" x-text="drawer.related.length"></span>
       </button>
-      <button class="tab" :class="drawer.tab==='yaml' && 'active'" @click="drawer.tab='yaml'">YAML</button>
+      <button class="tab" :class="drawer.tab==='yaml' && 'active'" @click="drawerTab('yaml')">YAML</button>
     </div>
     <div class="drawer-body">
       <template x-if="drawer.loading"><div class="skeleton" style="height:200px"></div></template>
@@ -496,19 +536,48 @@
         </template>
         <template x-if="!(drawer.raw?.status?.conditions || drawerConds()).length"><div style="color:var(--text-muted);font-size:13px">No status conditions reported.</div></template>
       </div>
+
+      <!-- Metrics (traffic graphs from Prometheus) -->
+      <div x-show="drawer.tab==='metrics'">
+        <div class="chart-toolbar">
+          <div class="chart-windows">
+            <template x-for="w in [15,30,60,180,360]" :key="w">
+              <button class="chart-win" :class="drawer.charts.window===w && 'active'" @click="setChartWindow(w)" x-text="w<60 ? w+'m' : (w/60)+'h'"></button>
+            </template>
+          </div>
+          <button class="icon-btn" :class="drawer.charts.loading && 'spinning'" @click="loadCharts()" title="Refresh"><i data-lucide="refresh-cw"></i></button>
+        </div>
+        <template x-if="drawer.charts.loading && !drawer.charts.loaded"><div class="skeleton" style="height:150px;margin-bottom:12px"></div></template>
+        <div x-show="drawer.charts.loaded || !drawer.charts.loading">
+          <div class="chart-block">
+            <div class="chart-title">Requests / sec <span class="chart-cur" x-text="chartCurrent(drawer.charts.rps, fmtAxisRps)"></span></div>
+            <div x-html="chartSvg(drawer.charts.rps, {color:'#6366f1', fmt:fmtAxisRps})"></div>
+          </div>
+          <div class="chart-block">
+            <div class="chart-title">p95 latency <span class="chart-cur" x-text="chartCurrent(drawer.charts.p95Ms, fmtAxisMs)"></span></div>
+            <div x-html="chartSvg(drawer.charts.p95Ms, {color:'#0ea5e9', fmt:fmtAxisMs})"></div>
+          </div>
+          <div class="chart-block">
+            <div class="chart-title">Error rate (5xx) <span class="chart-cur" x-text="chartCurrent(drawer.charts.errorRate, fmtAxisPct)"></span></div>
+            <div x-html="chartSvg(drawer.charts.errorRate, {color:'#ef4444', fmt:fmtAxisPct, floor:0.01})"></div>
+          </div>
+        </div>
+      </div>
+
       <div x-show="drawer.tab==='related' && !drawer.loading">
         <template x-if="drawer.relatedLoading"><div class="skeleton" style="height:120px"></div></template>
         <template x-for="r in drawer.related" :key="r.relation+r.kind+r.namespace+r.name">
-          <div class="problem" style="border-color:var(--border);cursor:pointer" role="button" tabindex="0"
+          <div class="problem" style="border-color:var(--border)" :style="isDrawerKind(r.kind) && 'cursor:pointer'"
+               :role="isDrawerKind(r.kind) ? 'button' : null" :tabindex="isDrawerKind(r.kind) ? '0' : null"
                :aria-label="r.relation+' '+r.kind+' '+r.name"
-               @click="openObj(r)" @keydown.enter="openObj(r)" @keydown.space.prevent="openObj(r)">
+               @click="isDrawerKind(r.kind) && openObj(r)" @keydown.enter="isDrawerKind(r.kind) && openObj(r)" @keydown.space.prevent="isDrawerKind(r.kind) && openObj(r)">
             <span class="pill muted" x-text="r.relation"></span>
             <div style="flex:1;min-width:0">
               <div><span class="tag" x-text="r.kind"></span> <strong x-text="r.name"></strong></div>
               <div class="reasons" x-text="r.namespace || 'cluster-scoped'"></div>
             </div>
             <span class="pill" :class="r.health"><i :data-lucide="healthIcon(r.health)"></i></span>
-            <i data-lucide="arrow-right" style="width:15px;height:15px;color:var(--text-faint)"></i>
+            <i data-lucide="arrow-right" x-show="isDrawerKind(r.kind)" style="width:15px;height:15px;color:var(--text-faint)"></i>
           </div>
         </template>
         <template x-if="!drawer.relatedLoading && !drawer.related.length"><div style="color:var(--text-muted);font-size:13px">No related resources found.</div></template>
@@ -546,6 +615,233 @@
       <div class="chip-row"><template x-for="g in me.allowedGroups" :key="g"><span class="chip parent" x-text="g"></span></template></div>
     </div>
     <button class="denied-btn" @click="logout()"><i data-lucide="log-out"></i> Log out</button>
+  </div>
+</div>
+
+<!-- ===================== Resource editor (write mode) ===================== -->
+<div class="editor-scrim" x-show="editor.open" x-cloak @keydown.escape.window="closeEditor()"
+     x-transition:enter="fade-enter" x-transition:enter-start="fade-from" x-transition:enter-end="fade-to">
+  <div class="editor-modal" role="dialog" aria-modal="true" :aria-label="editor.title">
+    <div class="editor-head">
+      <i data-lucide="file-code" style="color:var(--brand)"></i>
+      <h3 x-text="editor.title"></h3>
+      <span class="pill warn" style="margin-left:auto" x-show="editor.mode==='create'">write mode</span>
+      <button class="icon-btn" :style="editor.mode==='create' ? '' : 'margin-left:auto'" @click="closeEditor()" aria-label="Close"><i data-lucide="x"></i></button>
+    </div>
+    <div class="tabs" style="padding:0 18px" x-show="editor.formAvailable">
+      <button class="tab" :class="editor.tab==='form' && 'active'" @click="editorSetTab('form')">Form</button>
+      <button class="tab" :class="editor.tab==='yaml' && 'active'" @click="editorSetTab('yaml')">YAML</button>
+    </div>
+
+    <!-- guided form (create/edit a route without writing YAML) -->
+    <template x-if="editor.tab==='form' && editor.form">
+    <div class="editor-form">
+      <div class="ftype" x-show="editor.mode==='create'">
+        <template x-for="k in routeKinds" :key="k">
+          <button type="button" class="ftype-btn" :class="editor.form.kind===k && 'active'" @click="editor.form.kind=k">
+            <span x-text="k.replace('Route','')"></span>
+          </button>
+        </template>
+      </div>
+      <div class="fgrid">
+        <label class="ffield"><span class="flabel">Name</span>
+          <input class="input2" x-model="editor.form.name" placeholder="my-route" /></label>
+        <div class="ffield"><span class="flabel">Namespace</span>
+          <div class="combo" x-data="{open:false,q:'',rect:null}" @click.outside="open=false" @keydown.escape.stop="open=false">
+            <div class="combo-input">
+              <input class="input2" :value="editor.form.namespace" placeholder="default"
+                     @focus="open=true;q='';rect=$el.getBoundingClientRect()" @click="open=true;rect=$el.getBoundingClientRect()"
+                     @input="editor.form.namespace=$event.target.value; q=$event.target.value; open=true" />
+              <i data-lucide="chevron-down" class="combo-chev"></i>
+            </div>
+            <div class="combo-pop" :style="comboStyle(rect)" x-show="open" x-cloak>
+              <template x-for="o in formNamespaces.filter(x=>!q || x.toLowerCase().includes(q.toLowerCase())).slice(0,50)" :key="o">
+                <button type="button" class="combo-opt" :class="o===editor.form.namespace && 'sel'" @click="editor.form.namespace=o; open=false">
+                  <span x-text="o"></span><span class="combo-check" x-show="o===editor.form.namespace">✓</span>
+                </button>
+              </template>
+              <button type="button" class="combo-opt create" x-show="q && !formNamespaces.includes(q)" @click="editor.form.namespace=q; open=false">
+                + Create “<span x-text="q"></span>”
+              </button>
+              <div class="combo-empty" x-show="!formNamespaces.length">No namespaces found</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="fsection">Parent gateway</div>
+      <div class="fgrid fgrid-3">
+        <div class="ffield"><span class="flabel">Gateway name</span>
+          <div class="combo" x-data="{open:false,q:'',rect:null}" @click.outside="open=false" @keydown.escape.stop="open=false">
+            <div class="combo-input">
+              <input class="input2" :value="editor.form.parent.name" placeholder="my-gateway"
+                     @focus="open=true;q='';rect=$el.getBoundingClientRect()" @click="open=true;rect=$el.getBoundingClientRect()"
+                     @input="editor.form.parent.name=$event.target.value; q=$event.target.value; open=true" />
+              <i data-lucide="chevron-down" class="combo-chev"></i>
+            </div>
+            <div class="combo-pop" :style="comboStyle(rect)" x-show="open" x-cloak>
+              <template x-for="o in gatewayNameOptions().filter(x=>!q || x.toLowerCase().includes(q.toLowerCase())).slice(0,50)" :key="o">
+                <button type="button" class="combo-opt" :class="o===editor.form.parent.name && 'sel'" @click="pickGatewayName(o); open=false">
+                  <span x-text="o"></span><span class="combo-check" x-show="o===editor.form.parent.name">✓</span>
+                </button>
+              </template>
+              <button type="button" class="combo-opt create" x-show="q && !gatewayNameOptions().includes(q)" @click="editor.form.parent.name=q; open=false">+ Use “<span x-text="q"></span>”</button>
+              <div class="combo-empty" x-show="!gatewayNameOptions().length">No gateways found</div>
+            </div>
+          </div>
+        </div>
+        <div class="ffield"><span class="flabel">Gateway namespace</span>
+          <div class="combo" x-data="{open:false,q:'',rect:null}" @click.outside="open=false" @keydown.escape.stop="open=false">
+            <div class="combo-input">
+              <input class="input2" :value="editor.form.parent.namespace" placeholder="gateway-system"
+                     @focus="open=true;q='';rect=$el.getBoundingClientRect()" @click="open=true;rect=$el.getBoundingClientRect()"
+                     @input="editor.form.parent.namespace=$event.target.value; q=$event.target.value; open=true" />
+              <i data-lucide="chevron-down" class="combo-chev"></i>
+            </div>
+            <div class="combo-pop" :style="comboStyle(rect)" x-show="open" x-cloak>
+              <template x-for="o in gatewayNsOptions().filter(x=>!q || x.toLowerCase().includes(q.toLowerCase())).slice(0,50)" :key="o">
+                <button type="button" class="combo-opt" :class="o===editor.form.parent.namespace && 'sel'" @click="editor.form.parent.namespace=o; open=false">
+                  <span x-text="o"></span><span class="combo-check" x-show="o===editor.form.parent.namespace">✓</span>
+                </button>
+              </template>
+              <button type="button" class="combo-opt create" x-show="q && !gatewayNsOptions().includes(q)" @click="editor.form.parent.namespace=q; open=false">+ Use “<span x-text="q"></span>”</button>
+              <div class="combo-empty" x-show="!gatewayNsOptions().length">No namespaces found</div>
+            </div>
+          </div>
+        </div>
+        <div class="ffield"><span class="flabel">Listener <span class="fopt">(sectionName)</span></span>
+          <div class="combo" x-data="{open:false,q:'',rect:null}" @click.outside="open=false" @keydown.escape.stop="open=false">
+            <div class="combo-input">
+              <input class="input2" :value="editor.form.parent.sectionName" placeholder="https"
+                     @focus="open=true;q='';rect=$el.getBoundingClientRect()" @click="open=true;rect=$el.getBoundingClientRect()"
+                     @input="editor.form.parent.sectionName=$event.target.value; q=$event.target.value; open=true" />
+              <i data-lucide="chevron-down" class="combo-chev"></i>
+            </div>
+            <div class="combo-pop" :style="comboStyle(rect)" x-show="open" x-cloak>
+              <template x-for="o in listenerOptions().filter(x=>!q || x.toLowerCase().includes(q.toLowerCase())).slice(0,50)" :key="o">
+                <button type="button" class="combo-opt" :class="o===editor.form.parent.sectionName && 'sel'" @click="editor.form.parent.sectionName=o; open=false">
+                  <span x-text="o"></span><span class="combo-check" x-show="o===editor.form.parent.sectionName">✓</span>
+                </button>
+              </template>
+              <button type="button" class="combo-opt create" x-show="q && !listenerOptions().includes(q)" @click="editor.form.parent.sectionName=q; open=false">+ Use “<span x-text="q"></span>”</button>
+              <div class="combo-empty" x-show="!listenerOptions().length">Pick a gateway first</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <template x-if="routeHasHostnames(editor.form.kind)">
+        <div>
+          <div class="fsection"><span x-text="editor.form.kind==='TLSRoute' ? 'Hostnames (SNI)' : 'Hostnames'"></span> <button class="fadd" @click="addHostname()"><i data-lucide="plus"></i></button></div>
+          <template x-for="(h,i) in editor.form.hostnames" :key="i">
+            <div class="frow">
+              <input class="input2" x-model="editor.form.hostnames[i]" placeholder="app.example.com" />
+              <button class="fdel" @click="removeHostname(i)" title="Remove"><i data-lucide="x"></i></button>
+            </div>
+          </template>
+        </div>
+      </template>
+
+      <div class="fsection">Rules <button class="fadd" @click="addRule()"><i data-lucide="plus"></i></button></div>
+      <template x-for="(rule,ri) in editor.form.rules" :key="ri">
+        <div class="rule-card">
+          <div class="rule-head">
+            <span class="rule-badge" x-text="'Rule '+(ri+1)"></span>
+            <button class="fdel" x-show="editor.form.rules.length>1" @click="removeRule(ri)" title="Remove rule"><i data-lucide="trash-2"></i></button>
+          </div>
+
+          <template x-if="routeHasPath(editor.form.kind)">
+            <div class="fgrid fgrid-pathwidth" style="margin-bottom:10px">
+              <label class="ffield"><span class="flabel">Path type</span>
+                <select class="select2" x-model="rule.path.type"><option>PathPrefix</option><option>Exact</option><option>RegularExpression</option></select></label>
+              <label class="ffield"><span class="flabel">Path value</span>
+                <input class="input2" x-model="rule.path.value" placeholder="/" /></label>
+            </div>
+          </template>
+
+          <div class="flabel" style="margin-bottom:5px">Backends <span class="fopt" style="text-transform:none;letter-spacing:0">· service in <span x-text="editor.form.namespace || 'namespace'"></span></span> <button class="fadd" @click="addRuleBackend(ri)"><i data-lucide="plus"></i></button></div>
+          <template x-for="(b,bi) in rule.backends" :key="bi">
+            <div class="frow frow-backend">
+              <div class="combo" style="flex:1" x-data="{open:false,q:'',rect:null}" @click.outside="open=false" @keydown.escape.stop="open=false">
+                <div class="combo-input">
+                  <input class="input2" :value="rule.backends[bi].name" placeholder="service name"
+                         @focus="open=true;q='';ensureFormServices();rect=$el.getBoundingClientRect()" @click="open=true;ensureFormServices();rect=$el.getBoundingClientRect()"
+                         @input="rule.backends[bi].name=$event.target.value; q=$event.target.value; open=true" />
+                  <i data-lucide="chevron-down" class="combo-chev"></i>
+                </div>
+                <div class="combo-pop" :style="comboStyle(rect)" x-show="open" x-cloak>
+                  <div class="combo-empty" x-show="formServices.loading">Loading services…</div>
+                  <template x-for="o in serviceNames().filter(x=>!q || x.toLowerCase().includes(q.toLowerCase())).slice(0,50)" :key="o">
+                    <button type="button" class="combo-opt" :class="o===rule.backends[bi].name && 'sel'" @click="pickService(ri,bi,o); open=false"><span x-text="o"></span><span class="combo-check" x-show="o===rule.backends[bi].name">✓</span></button>
+                  </template>
+                  <button type="button" class="combo-opt create" x-show="q && !serviceNames().includes(q)" @click="rule.backends[bi].name=q; open=false">+ Use “<span x-text="q"></span>”</button>
+                  <div class="combo-empty" x-show="!formServices.loading && !serviceNames().length">No services in this namespace</div>
+                </div>
+              </div>
+              <input class="input2" type="number" x-model.number="rule.backends[bi].port" placeholder="port" style="max-width:80px" />
+              <input class="input2" type="number" x-model.number="rule.backends[bi].weight" placeholder="weight" style="max-width:80px" x-show="rule.backends.length>1" />
+              <button class="fdel" @click="removeRuleBackend(ri,bi)" title="Remove"><i data-lucide="x"></i></button>
+            </div>
+          </template>
+
+          <template x-if="editor.form.kind==='HTTPRoute'">
+            <details class="rule-adv">
+              <summary>Advanced <span class="fopt">— rewrite · headers · timeouts</span></summary>
+              <div style="padding-top:12px">
+                <label class="ffield" style="margin-bottom:12px"><span class="flabel">URL rewrite — replace prefix <span class="fopt">(empty = none)</span></span>
+                  <input class="input2" x-model="rule.rewritePrefix" placeholder="e.g. /" /></label>
+                <div class="flabel" style="margin-bottom:5px">Set request headers <button class="fadd" @click="addSetHeader(ri)"><i data-lucide="plus"></i></button></div>
+                <template x-for="(h,hi) in rule.setHeaders" :key="hi">
+                  <div class="frow">
+                    <input class="input2" x-model="rule.setHeaders[hi].name" placeholder="Header-Name" />
+                    <input class="input2" x-model="rule.setHeaders[hi].value" placeholder="value" />
+                    <button class="fdel" @click="removeSetHeader(ri,hi)" title="Remove"><i data-lucide="x"></i></button>
+                  </div>
+                </template>
+                <div class="fgrid" style="margin-top:12px">
+                  <label class="ffield"><span class="flabel">Request timeout</span><input class="input2" x-model="rule.timeoutRequest" placeholder="e.g. 300s" /></label>
+                  <label class="ffield"><span class="flabel">Backend timeout</span><input class="input2" x-model="rule.timeoutBackend" placeholder="e.g. 300s" /></label>
+                </div>
+              </div>
+            </details>
+          </template>
+        </div>
+      </template>
+    </div>
+    </template>
+
+    <textarea class="editor-area" x-show="editor.tab==='yaml'" x-ref="editorArea" x-model="editor.yaml" spellcheck="false"
+              @keydown.meta.enter.prevent="applyEditor()" @keydown.ctrl.enter.prevent="applyEditor()"
+              placeholder="Paste a Gateway API manifest (YAML)…"></textarea>
+    <div class="editor-err" x-show="editor.error" x-text="editor.error"></div>
+    <div class="editor-foot">
+      <span class="editor-hint">Applies to the live cluster · <kbd>⌘↵</kbd> to apply</span>
+      <button class="btn btn--secondary" @click="closeEditor()">Cancel</button>
+      <button class="btn btn--primary" :class="editor.busy && 'busy'" :disabled="editor.busy" @click="applyEditor()">
+        <i :data-lucide="editor.busy ? 'loader-2' : 'check'"></i>
+        <span x-text="editor.busy ? 'Applying…' : 'Apply'"></span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== Delete confirmation ===================== -->
+<div class="confirm-scrim" x-show="confirm.open" x-cloak @click="closeConfirm()"
+     x-transition:enter="fade-enter" x-transition:enter-start="fade-from" x-transition:enter-end="fade-to">
+  <div class="confirm-card" @click.stop role="alertdialog" aria-modal="true" aria-label="Confirm delete">
+    <div class="confirm-icon"><i data-lucide="trash-2"></i></div>
+    <h3>Delete this resource?</h3>
+    <p>This permanently deletes
+      <strong x-text="confirm.target && confirm.target.kind"></strong>
+      <span class="confirm-name" x-text="confirm.target && ((confirm.target.namespace ? confirm.target.namespace + '/' : '') + confirm.target.name)"></span>
+      from the live cluster. This cannot be undone.</p>
+    <div class="confirm-actions">
+      <button class="btn btn--secondary" :disabled="confirm.busy" @click="closeConfirm()">Cancel</button>
+      <button class="btn btn--danger-solid" :class="confirm.busy && 'busy'" :disabled="confirm.busy" @click="confirmDelete()">
+        <i :data-lucide="confirm.busy ? 'loader-2' : 'trash-2'"></i>
+        <span x-text="confirm.busy ? 'Deleting…' : 'Delete'"></span>
+      </button>
+    </div>
   </div>
 </div>
 

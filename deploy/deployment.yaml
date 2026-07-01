@@ -40,6 +40,13 @@ spec:
               value: "in-cluster"
             - name: LOG_LEVEL
               value: "INFO"
+            # Write mode (create/edit/delete from the UI). OFF by default — the app is
+            # read-only. Enabling also requires write verbs in rbac.yaml (see note there).
+            - name: WRITE_ENABLED
+              value: "false"
+            # Optional Prometheus integration for per-route RPS / p95 / error-rate.
+            # - name: PROMETHEUS_URL
+            #   value: "http://prometheus.monitoring:9090"
             # Authorization (off by default). When the gateway runs the Keycloak OIDC
             # flow in front and forwards identity headers, set AUTH_ENABLED=true and
             # restrict access with AUTH_ALLOWED_GROUPS (comma-separated, empty = any

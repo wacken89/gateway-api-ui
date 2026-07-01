@@ -203,6 +203,53 @@ def route_view(obj: dict, rtype: str) -> dict:
     }
 
 
+_ROUTE_KIND = {"http": "HTTPRoute", "grpc": "GRPCRoute", "tls": "TLSRoute", "tcp": "TCPRoute"}
+
+
+def route_summary(obj: dict, rtype: str) -> dict:
+    """Slim route view for the (paginated) list.
+
+    Carries a *compact* per-rule breakdown (path -> backends + filter types) so
+    the card shows which URL routes to which service, but omits the heavy parts
+    (header/query matches, backend weights, full filter configs). Full detail is
+    loaded on demand via /api/object when a route is opened in the drawer.
+    """
+    spec = obj.get("spec", {})
+    meta = _meta(obj)
+    meta.pop("labels", None)
+    ns = meta["namespace"]
+    rules = []
+    all_backends = []
+    for r in (spec.get("rules") or []):
+        matches = r.get("matches") or []
+        m0 = matches[0] if matches else {}
+        p = m0.get("path") or {}
+        path = f"{p.get('type', 'PathPrefix')}:{p.get('value', '/')}" if p else None
+        rbackends = [{"name": b.get("name"), "port": b.get("port")}
+                     for b in (r.get("backendRefs") or [])]
+        all_backends.extend(rbackends)
+        rules.append({
+            "path": path,
+            "method": m0.get("method"),
+            "backends": rbackends,
+            "filters": [f.get("type") for f in (r.get("filters") or [])],
+        })
+    status_parents = (obj.get("status") or {}).get("parents") or []
+    pconds = [c for p in status_parents for c in (p.get("conditions") or [])]
+    return {
+        "kind": _ROUTE_KIND[rtype],
+        "routeType": rtype,
+        **meta,
+        "hostnames": spec.get("hostnames", []),
+        "parentRefs": _parent_refs(spec, ns),
+        "rules": rules,
+        "ruleCount": len(rules),
+        "backendCount": len(all_backends),
+        "backends": all_backends[:6],
+        "health": _health_from_conditions(pconds),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Controller / provider identification (Cilium, Envoy, NGINX, …)
 # ---------------------------------------------------------------------------

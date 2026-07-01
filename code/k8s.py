@@ -84,6 +84,7 @@ class KubeClient:
         self._cache_ttl = cache_ttl
         self._cache: dict[str, _CacheEntry] = {}
         self._lock = threading.Lock()
+        self._keylocks: dict[str, threading.Lock] = {}  # per-key singleflight locks
         # Remember which (plural -> version) actually works so we don't probe twice.
         self._resolved_version: dict[str, str | None] = {}
 
@@ -115,15 +116,28 @@ class KubeClient:
     # ----- low level cache ------------------------------------------------
 
     def _cached(self, key: str, producer):
+        # Singleflight: on a miss, only one thread runs producer() per key; other
+        # threads block on that key's lock and pick up the freshly cached value,
+        # instead of all stampeding the apiserver at once when the TTL expires.
         now = time.monotonic()
         with self._lock:
             hit = self._cache.get(key)
             if hit and hit.expires > now:
                 return hit.value
-        value = producer()
-        with self._lock:
-            self._cache[key] = _CacheEntry(value, now + self._cache_ttl)
-        return value
+            keylock = self._keylocks.get(key)
+            if keylock is None:
+                keylock = threading.Lock()
+                self._keylocks[key] = keylock
+        with keylock:
+            now = time.monotonic()
+            with self._lock:
+                hit = self._cache.get(key)
+                if hit and hit.expires > now:
+                    return hit.value
+            value = producer()
+            with self._lock:
+                self._cache[key] = _CacheEntry(value, time.monotonic() + self._cache_ttl)
+            return value
 
     def invalidate(self) -> None:
         with self._lock:
@@ -181,6 +195,72 @@ class KubeClient:
     def policy_available(self, kind: str) -> bool:
         plural = POLICY_KINDS.get(kind)
         return plural is not None and self._resolved_version.get(plural) is not None
+
+    # ----- write operations (only used when WRITE_ENABLED) ----------------
+
+    def _resolve_write(self, kind: str, api_version: str | None):
+        reg = KIND_REGISTRY.get(kind)
+        if not reg:
+            raise ValueError(f"unsupported kind: {kind!r}")
+        group, versions, plural, namespaced = reg
+        # honour the manifest's apiVersion if it matches the kind's group
+        version = versions[0]
+        if api_version and "/" in api_version:
+            g, v = api_version.split("/", 1)
+            if g != group:
+                raise ValueError(f"apiVersion group {g!r} does not match kind {kind!r}")
+            version = v
+        return group, version, plural, namespaced
+
+    def apply_object(self, obj: dict) -> dict:
+        """Create or replace a Gateway API / policy object from a manifest dict."""
+        kind = obj.get("kind")
+        meta = obj.get("metadata") or {}
+        name = meta.get("name")
+        namespace = meta.get("namespace")
+        if not kind or not name:
+            raise ValueError("manifest must have kind and metadata.name")
+        group, version, plural, namespaced = self._resolve_write(kind, obj.get("apiVersion"))
+        if namespaced and not namespace:
+            raise ValueError(f"{kind} is namespaced — metadata.namespace is required")
+        # ensure apiVersion is set/normalised
+        obj["apiVersion"] = f"{group}/{version}"
+
+        try:
+            if namespaced:
+                created = self.custom.create_namespaced_custom_object(
+                    group, version, namespace, plural, obj)
+            else:
+                created = self.custom.create_cluster_custom_object(group, version, plural, obj)
+            self.invalidate()
+            return {"action": "created", "object": created}
+        except ApiException as exc:
+            if exc.status != 409:  # not an "already exists" conflict
+                raise
+        # exists -> replace, carrying the current resourceVersion
+        if namespaced:
+            current = self.custom.get_namespaced_custom_object(group, version, namespace, plural, name)
+        else:
+            current = self.custom.get_cluster_custom_object(group, version, plural, name)
+        obj.setdefault("metadata", {})["resourceVersion"] = \
+            current.get("metadata", {}).get("resourceVersion")
+        if namespaced:
+            updated = self.custom.replace_namespaced_custom_object(
+                group, version, namespace, plural, name, obj)
+        else:
+            updated = self.custom.replace_cluster_custom_object(group, version, plural, name, obj)
+        self.invalidate()
+        return {"action": "updated", "object": updated}
+
+    def delete_object(self, kind: str, name: str, namespace: str | None) -> None:
+        group, version, plural, namespaced = self._resolve_write(kind, None)
+        if namespaced:
+            if not namespace:
+                raise ValueError(f"{kind} is namespaced — namespace is required")
+            self.custom.delete_namespaced_custom_object(group, version, namespace, plural, name)
+        else:
+            self.custom.delete_cluster_custom_object(group, version, plural, name)
+        self.invalidate()
 
     # ----- core resources -------------------------------------------------
 

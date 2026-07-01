@@ -1,8 +1,8 @@
 apiVersion: v2
 name: gateway-api-ui
-description: Read-only web dashboard for the Kubernetes Gateway API (Envoy / Cilium / NGINX / Istio)
+description: Web dashboard for the Kubernetes Gateway API (Envoy / Cilium / NGINX / Istio), read-only by default with optional write mode
 type: application
-version: 1.0.0
+version: 1.1.0
 appVersion: "latest"
 home: https://github.com/wacken89/gateway-api-ui
 sources:
